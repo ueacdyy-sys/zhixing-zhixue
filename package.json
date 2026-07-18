@@ -1,0 +1,14 @@
+{
+  "name": "zhixingzhixue",
+  "private": true,
+  "packageManager": "pnpm@11.4.0",
+  "scripts": {
+    "pc:dev": "pnpm --filter @zhixingzhixue/pc-workbench dev",
+    "pc:test": "pnpm --filter @zhixingzhixue/pc-workbench test",
+    "pc:lint": "pnpm --filter @zhixingzhixue/pc-workbench lint",
+    "pc:build": "pnpm --filter @zhixingzhixue/pc-workbench build",
+    "hub:test": "cd services/local-hub && uv run pytest",
+    "hub:lint": "cd services/local-hub && uv run ruff check src tests",
+    "hub:format": "cd services/local-hub && uv run ruff format src tests"
+  }
+}

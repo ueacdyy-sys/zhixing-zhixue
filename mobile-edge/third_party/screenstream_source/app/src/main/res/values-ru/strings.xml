@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_error_title">Ошибка</string>
+    <string name="app_error_recover">Восстановить</string>
+
+    <string name="app_activity_update_dialog_title">Доступно обновление</string>
+    <string name="app_activity_update_dialog_message">Обновление было только что загружено. Перезапустить приложение сейчас?</string>
+    <string name="app_activity_update_dialog_restart">Перезапустить</string>
+
+    <string name="app_tab_stream">Трансляция</string>
+    <string name="app_tab_settings">Настройки</string>
+    <string name="app_tab_about">Инфо</string>
+    <string name="app_tab_exit">Выход</string>
+
+    <string name="app_tab_stream_select_mode">Выберите режим трансляции:</string>
+
+    <string name="app_permission_required_title">Требуется разрешение</string>
+    <string name="app_permission_allow_notifications">Этому приложению нужно разрешение на уведомления, чтобы запустить службу трансляции.\n\nРазрешите уведомления.</string>
+    <string name="app_permission_allow_notifications_settings">Этому приложению нужно разрешение на уведомления, чтобы запустить службу трансляции.\n\nВключите уведомления в настройках приложения.</string>
+    <string name="app_permission_notification_settings">Открыть настройки</string>
+    <string name="app_permission_local_network_title">Требуется доступ к локальной сети</string>
+    <string name="app_permission_local_network_message">Разрешите ScreenStream использовать локальную сеть, чтобы устройства могли подключаться к трансляции.</string>
+    <string name="app_permission_local_network_off_title">Доступ к локальной сети выключен</string>
+    <string name="app_permission_local_network_settings_message">Включите доступ к локальной сети в настройках Android, чтобы поделиться экраном с устройствами.</string>
+    <string name="app_permission_open_settings">Открыть настройки</string>
+    <string name="app_permission_try_again">Повторить</string>
+
+    <string name="app_notification_channel_streaming">Уведомления о трансляции</string>
+    <string name="app_notification_channel_error">Уведомления об ошибках</string>
+    <string name="app_notification_streaming_title">Транслирую…</string>
+    <string name="app_notification_streaming_content">Нажмите Стоп, чтобы завершить трансляцию</string>
+    <string name="app_notification_stop">Остановить</string>
+
+    <string name="app_tile_start">Запустить</string>
+    <string name="app_tile_stop">Остановить</string>
+
+    <string name="app_pref_back">Назад</string>
+    <string name="app_pref_settings">Настройки</string>
+    <string name="app_pref_locale">Язык приложения</string>
+    <string name="app_pref_locale_summary">Открыть настройки языка приложения</string>
+    <string name="app_pref_locale_default">Системные настройки</string>
+    <string name="app_pref_night_mode">Темная тема</string>
+    <string-array name="app_pref_night_mode_options_api21_28">
+        <item>Всегда</item>
+        <item>Только при экономии батареи</item>
+        <item>Никогда</item>
+    </string-array>
+    <string-array name="app_pref_night_mode_options_api29">
+        <item>Всегда</item>
+        <item>Автоматически (следовать за системой)</item>
+        <item>Никогда</item>
+    </string-array>
+    <string name="app_pref_dynamic_theme">Динамический цвет</string>
+    <string name="app_pref_dynamic_theme_summary">Настройте внешний вид на основе цветов вашего фона</string>
+    <string name="app_pref_notification">Настройки уведомлений устройства</string>
+    <string name="app_pref_notification_summary">Открыть настройки уведомлений системы</string>
+    <string name="app_pref_tile">Добавить плитку приложения</string>
+    <string name="app_pref_tile_summary">Добавить плитку приложения в Быстрые настройки</string>
+
+    <string name="app_tab_about_app_version">Версия: %1$s</string>
+    <string name="app_tab_about_developer_name">Разработчик Дмитрий Криворучко</string>
+    <string name="app_tab_about_rate_app">Оценить приложение</string>
+    <string name="app_tab_about_app_sources">Исходный код приложения</string>
+    <string name="app_tab_about_terms_conditions">Условия использования</string>
+    <string name="app_tab_about_privacy_policy">Политика конфиденциальности</string>
+    <string name="app_tab_about_privacy_options">Опции конфиденциальности</string>
+    <string name="app_tab_about_license">Лицензия</string>
+</resources>

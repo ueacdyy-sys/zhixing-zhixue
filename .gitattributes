@@ -1,0 +1,20 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+
+*.apk binary
+*.docx binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.jks binary
+*.jpeg binary
+*.jpg binary
+*.mkv binary
+*.mp4 binary
+*.pdf binary
+*.png binary
+*.webp binary
+
+# Markdown 的两个空格可表示硬换行；上游 QR 实现按原样保留以便追溯许可证与差异。
+*.md whitespace=-trailing-space,-blank-at-eof
+mobile-edge/third_party/screenstream_source/common/src/main/java/io/nayuki/qrcodegen/*.java whitespace=-trailing-space

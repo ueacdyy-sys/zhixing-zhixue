@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_error_title">შეცდომა</string>
+    <string name="app_error_recover">აღდგენა</string>
+
+    <string name="app_activity_update_dialog_title">Განახლება შესაძლებელია</string>
+    <string name="app_activity_update_dialog_message">განახლება ახლახან ჩამოიტვირთა. გადატვირთოთ აპი ახლა?</string>
+    <string name="app_activity_update_dialog_restart">Რესტარტი</string>
+
+    <string name="app_tab_stream">ნაკადი</string>
+    <string name="app_tab_settings">პარამეტრები</string>
+    <string name="app_tab_about">შესახებ</string>
+    <string name="app_tab_exit">გასვლა</string>
+
+    <string name="app_tab_stream_select_mode">აირჩიეთ ნაკადის რეჟიმი:</string>
+
+    <string name="app_permission_required_title">საჭიროა ნებართვა</string>
+    <string name="app_permission_allow_notifications">სტრიმინგის სერვისის დასაწყებად ამ აპს შეტყობინებების ნებართვა სჭირდება.\n\nდაუშვით შეტყობინებები.</string>
+    <string name="app_permission_allow_notifications_settings">სტრიმინგის სერვისის დასაწყებად ამ აპს შეტყობინებების ნებართვა სჭირდება.\n\nჩართეთ შეტყობინებები აპის პარამეტრებში.</string>
+    <string name="app_permission_notification_settings">გახსენით პარამეტრები</string>
+    <string name="app_permission_local_network_title">საჭიროა ლოკალურ ქსელზე წვდომა</string>
+    <string name="app_permission_local_network_message">დაუშვით, რომ ScreenStream-მა გამოიყენოს თქვენი ლოკალური ქსელი, რათა მოწყობილობები თქვენს ნაკადს დაუკავშირდნენ.</string>
+    <string name="app_permission_local_network_off_title">ლოკალურ ქსელზე წვდომა გამორთულია</string>
+    <string name="app_permission_local_network_settings_message">ჩართეთ ლოკალურ ქსელზე წვდომა Android-ის პარამეტრებში, რომ ეკრანი მოწყობილობებს გაუზიაროთ.</string>
+    <string name="app_permission_open_settings">გახსენით პარამეტრები</string>
+    <string name="app_permission_try_again">ხელახლა სცადეთ</string>
+
+    <string name="app_notification_channel_streaming">სტრიმინგის შეტყობინებები</string>
+    <string name="app_notification_channel_error">შეცდომის შეტყობინებები</string>
+    <string name="app_notification_streaming_title">სტრიმინგი…</string>
+    <string name="app_notification_streaming_content">ნაკადის დასასრულებლად შეეხეთ შეჩერებას</string>
+    <string name="app_notification_stop">გაჩერდი</string>
+
+    <string name="app_tile_start">დაწყება</string>
+    <string name="app_tile_stop">გაჩერდი</string>
+
+    <string name="app_pref_back">უკან</string>
+    <string name="app_pref_settings">პარამეტრები</string>
+    <string name="app_pref_locale">განაცხადის ენა</string>
+    <string name="app_pref_locale_summary">გახსენით აპლიკაციის ენის პარამეტრები</string>
+    <string name="app_pref_locale_default">სისტემის ნაგულისხმევი</string>
+    <string name="app_pref_night_mode">მუქი თემა</string>
+    <string-array name="app_pref_night_mode_options_api21_28">
+        <item>ყოველთვის</item>
+        <item>დააყენეთ ბატარეის დამზოგით</item>
+        <item>არასოდეს</item>
+    </string-array>
+    <string-array name="app_pref_night_mode_options_api29">
+        <item>ყოველთვის</item>
+        <item>ავტომატურად (მიდევნეთ სისტემას)</item>
+        <item>არასოდეს</item>
+    </string-array>
+    <string name="app_pref_dynamic_theme">დინამიური ფერი</string>
+    <string name="app_pref_dynamic_theme_summary">დაარეგულირეთ გარეგნობა თქვენი ფონის ფერების მიხედვით</string>
+    <string name="app_pref_notification">მოწყობილობის შეტყობინებების პარამეტრები</string>
+    <string name="app_pref_notification_summary">გახსენით სისტემის შეტყობინებების პარამეტრები</string>
+    <string name="app_pref_tile">დაუმატეთ აპლიკაციის ფილა</string>
+    <string name="app_pref_tile_summary">დაუმატეთ აპლიკაციის ფილა სწრაფი პარამეტრებისათვის</string>
+
+    <string name="app_tab_about_app_version">ვერსია: %1$s</string>
+    <string name="app_tab_about_developer_name">შემუშავებულია დმიტრო კრივორუჩკოს მიერ</string>
+    <string name="app_tab_about_rate_app">Შეაფასე აპლიკაცია</string>
+    <string name="app_tab_about_app_sources">განაცხადის წყაროები</string>
+    <string name="app_tab_about_terms_conditions">Ვადები და პირობები</string>
+    <string name="app_tab_about_privacy_policy">Კონფიდენციალურობის პოლიტიკა</string>
+    <string name="app_tab_about_privacy_options">კონფიდენციალურობის პარამეტრები</string>
+    <string name="app_tab_about_license">ლიცენზია</string>
+</resources>

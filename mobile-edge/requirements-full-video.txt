@@ -1,0 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch
+torchvision
+transformers
+accelerate
+qwen-vl-utils
+av
+pillow
+faster-whisper
+fastapi
+uvicorn

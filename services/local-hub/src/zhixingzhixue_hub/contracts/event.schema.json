@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LearningEvidenceEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "session_id",
+    "task_id",
+    "source",
+    "modality",
+    "event_type",
+    "start_ts",
+    "end_ts",
+    "confidence",
+    "quality_flags",
+    "evidence_uri",
+    "privacy_level",
+    "review_status"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["pc", "phone", "glasses", "wearable"] },
+    "modality": { "enum": ["behavior", "media", "vision", "biosignal"] },
+    "event_type": { "type": "string", "minLength": 1 },
+    "start_ts": { "type": "string", "format": "date-time" },
+    "end_ts": { "type": "string", "format": "date-time" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "quality_flags": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "evidence_uri": { "type": "string", "pattern": "^local://" },
+    "privacy_level": { "enum": ["local_only", "masked"] },
+    "review_status": { "enum": ["auto", "human_checked", "disputed"] }
+  }
+}

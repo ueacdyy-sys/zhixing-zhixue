@@ -1,0 +1,15 @@
+<resources>
+    <string name="student_home_title">知行智学</string>
+    <string name="student_home_subtitle">日常碎片化内容只形成可回溯候选，不直接生成兴趣或知识结论。</string>
+    <string name="student_session_open">开启本地学习会话</string>
+    <string name="student_session_active">本地会话进行中</string>
+    <string name="student_session_open_detail">由你主动开启；手机会话不会自动创建或替代 PC 学习任务。</string>
+    <string name="student_session_active_detail">正在只记录本地证据与设备状态，你可以随时停止。</string>
+    <string name="student_candidates_title">本地知识点候选</string>
+    <string name="student_candidates_empty">暂无候选。手机媒体经 PC 本地分析与证据门控后，候选才会出现。</string>
+    <string name="student_candidates_waiting">等待证据</string>
+    <string name="student_candidates_ready">可查看</string>
+    <string name="student_devices_title">设备连接</string>
+    <string name="student_devices_value">手机已就绪；PC、眼镜与手表等待学生主动连接。</string>
+    <string name="student_media_control">进入媒体连接</string>
+</resources>

@@ -1,0 +1,9 @@
+captures/
+logs/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.log
+__pycache__/
+*.pyc

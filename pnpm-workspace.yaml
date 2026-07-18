@@ -1,0 +1,4 @@
+packages:
+  - "apps/pc-workbench"
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_error_title">エラー</string>
+    <string name="app_error_recover">回復</string>
+
+    <string name="app_activity_update_dialog_title">更新が利用可能</string>
+    <string name="app_activity_update_dialog_message">アップデートをダウンロードしました。 今すぐアプリを再起動しますか?</string>
+    <string name="app_activity_update_dialog_restart">再起動</string>
+
+    <string name="app_tab_stream">ストリーム</string>
+    <string name="app_tab_settings">設定</string>
+    <string name="app_tab_about">情報</string>
+    <string name="app_tab_exit">終了</string>
+
+    <string name="app_tab_stream_select_mode">ストリームモードを選択：</string>
+
+    <string name="app_permission_required_title">権限が必要です</string>
+    <string name="app_permission_allow_notifications">このアプリはストリーミングサービスを開始するために通知権限が必要です。\n\n通知を許可してください。</string>
+    <string name="app_permission_allow_notifications_settings">このアプリはストリーミングサービスを開始するために通知権限が必要です。\n\nアプリ設定で通知を有効にしてください。</string>
+    <string name="app_permission_notification_settings">設定を開く</string>
+    <string name="app_permission_local_network_title">ローカルネットワークへのアクセスが必要です</string>
+    <string name="app_permission_local_network_message">デバイスがストリームに接続できるように、ScreenStream にローカルネットワークの使用を許可してください。</string>
+    <string name="app_permission_local_network_off_title">ローカルネットワークへのアクセスがオフです</string>
+    <string name="app_permission_local_network_settings_message">デバイスと画面を共有するには、Android 設定でローカルネットワークへのアクセスをオンにしてください。</string>
+    <string name="app_permission_open_settings">設定を開く</string>
+    <string name="app_permission_try_again">もう一度試す</string>
+
+    <string name="app_notification_channel_streaming">ストリーミング通知</string>
+    <string name="app_notification_channel_error">エラー通知</string>
+    <string name="app_notification_streaming_title">ストリーム中…</string>
+    <string name="app_notification_streaming_content">ストリームを終了するには停止をタップ</string>
+    <string name="app_notification_stop">停止</string>
+
+    <string name="app_tile_start">開始</string>
+    <string name="app_tile_stop">停止</string>
+
+    <string name="app_pref_back">戻る</string>
+    <string name="app_pref_settings">設定</string>
+    <string name="app_pref_locale">アプリケーション言語</string>
+    <string name="app_pref_locale_summary">アプリケーション言語設定を開く</string>
+    <string name="app_pref_locale_default">システムデフォルト</string>
+    <string name="app_pref_night_mode">ダークテーマ</string>
+    <string-array name="app_pref_night_mode_options_api21_28">
+        <item>常時オン</item>
+        <item>バッテリー セーバー有効時にオン</item>
+        <item>オフ</item>
+    </string-array>
+    <string-array name="app_pref_night_mode_options_api29">
+        <item>常時オン</item>
+        <item>自動 (システムに従う)</item>
+        <item>オフ</item>
+    </string-array>
+    <string name="app_pref_dynamic_theme">ダイナミックカラー</string>
+    <string name="app_pref_dynamic_theme_summary">壁紙の色に基づいて外観を調整します</string>
+    <string name="app_pref_notification">端末の通知設定</string>
+    <string name="app_pref_notification_summary">システムの通知設定を開きます</string>
+    <string name="app_pref_tile">アプリのタイルを追加</string>
+    <string name="app_pref_tile_summary">クイック設定にアプリのタイルを追加</string>
+
+    <string name="app_tab_about_app_version">バージョン: %1$s</string>
+    <string name="app_tab_about_developer_name">開発者: Dmytro Kryvoruchko</string>
+    <string name="app_tab_about_rate_app">アプリを評価</string>
+    <string name="app_tab_about_app_sources">アプリケーションのソースコード</string>
+    <string name="app_tab_about_terms_conditions">利用規約</string>
+    <string name="app_tab_about_privacy_policy">プライバシーポリシー</string>
+    <string name="app_tab_about_privacy_options">プライバシーオプション</string>
+    <string name="app_tab_about_license">ライセンス</string>
+</resources>

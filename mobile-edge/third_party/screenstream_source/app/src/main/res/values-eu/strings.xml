@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_error_title">Errorea</string>
+    <string name="app_error_recover">Leheneratu</string>
+
+    <string name="app_activity_update_dialog_title">Bertsio-berritze bat eskuragai</string>
+    <string name="app_activity_update_dialog_message">Bertsio berri bat deskargatu da. Berrabiarazi nahi duzu aplikazioa?</string>
+    <string name="app_activity_update_dialog_restart">Berrabiarazi</string>
+
+    <string name="app_tab_stream">Streaming</string>
+    <string name="app_tab_settings">Ezarpenak</string>
+    <string name="app_tab_about">Honi buruz</string>
+    <string name="app_tab_exit">Irten</string>
+
+    <string name="app_tab_stream_select_mode">Hautatu streaming modua:</string>
+
+    <string name="app_permission_required_title">Baimena behar da</string>
+    <string name="app_permission_allow_notifications">Aplikazio honek jakinarazpen-baimena behar du transmisio-zerbitzua hasteko.\n\nBaimendu jakinarazpenak.</string>
+    <string name="app_permission_allow_notifications_settings">Aplikazio honek jakinarazpen-baimena behar du transmisio-zerbitzua hasteko.\n\nGaitu jakinarazpenak aplikazioaren ezarpenetan.</string>
+    <string name="app_permission_notification_settings">Ireki ezarpenak</string>
+    <string name="app_permission_local_network_title">Tokiko sarerako sarbidea behar da</string>
+    <string name="app_permission_local_network_message">Utzi ScreenStreami zure tokiko sarea erabiltzen, gailuak zure transmisiora konektatu ahal izateko.</string>
+    <string name="app_permission_local_network_off_title">Tokiko sarerako sarbidea desaktibatuta dago</string>
+    <string name="app_permission_local_network_settings_message">Zure pantaila gailuekin partekatzeko, gaitu tokiko sarerako sarbidea Android ezarpenetan.</string>
+    <string name="app_permission_open_settings">Ireki ezarpenak</string>
+    <string name="app_permission_try_again">Saiatu berriro</string>
+
+    <string name="app_notification_channel_streaming">Igorpen-jakinarazpenak</string>
+    <string name="app_notification_channel_error">Errore-jakinarazpenak</string>
+    <string name="app_notification_streaming_title">Igortzen…</string>
+    <string name="app_notification_streaming_content">Sakatu Gelditu transmisioa amaitzeko</string>
+    <string name="app_notification_stop">Gelditu</string>
+
+    <string name="app_tile_start">Hasi</string>
+    <string name="app_tile_stop">Gelditu</string>
+
+    <string name="app_pref_back">Atzera</string>
+    <string name="app_pref_settings">Ezarpenak</string>
+    <string name="app_pref_locale">Aplikazioaren hizkuntza</string>
+    <string name="app_pref_locale_summary">Ireki aplikazioaren hizkuntza-ezarpenak</string>
+    <string name="app_pref_locale_default">Sistemaren lehenetsia</string>
+    <string name="app_pref_night_mode">Gai iluna</string>
+    <string-array name="app_pref_night_mode_options_api21_28">
+        <item>Beti</item>
+        <item>Ezarri energia aurreztea</item>
+        <item>Inoiz ez</item>
+    </string-array>
+    <string-array name="app_pref_night_mode_options_api29">
+        <item>Beti</item>
+        <item>Automatikoa (Sisteman bezala)</item>
+        <item>Inoiz ez</item>
+    </string-array>
+    <string name="app_pref_dynamic_theme">Kolore dinamikoa</string>
+    <string name="app_pref_dynamic_theme_summary">Doitu itxura zure horma-paperen koloreen arabera</string>
+    <string name="app_pref_notification">Jakinarazpen-ezarpenak</string>
+    <string name="app_pref_notification_summary">Ireki sistemaren jakinarazpen-ezarpenak</string>
+    <string name="app_pref_tile">Gehitu aplikazioaren lauza</string>
+    <string name="app_pref_tile_summary">Gehitu aplikazioaren lauza Ezarpen bizkorretan</string>
+
+    <string name="app_tab_about_app_version">Bertsioa: %1$s</string>
+    <string name="app_tab_about_developer_name">Dmytro Kryvoruchko-k garatua</string>
+    <string name="app_tab_about_rate_app">Baloratu aplikazioa</string>
+    <string name="app_tab_about_app_sources">Aplikazioaren iturburuak</string>
+    <string name="app_tab_about_terms_conditions">Baldintzak</string>
+    <string name="app_tab_about_privacy_policy">Pribatutasun-politika</string>
+    <string name="app_tab_about_privacy_options">Pribatutasun-aukerak</string>
+    <string name="app_tab_about_license">Lizentzia</string>
+</resources>
