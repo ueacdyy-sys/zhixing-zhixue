@@ -24,9 +24,9 @@ android {
 }
 
 dependencies {
-    api(projects.learningApplication)
-    implementation(projects.common)
-    implementation(projects.rtsp)
+    api(dependencies.project(":learning-application"))
+    implementation(dependencies.project(":common"))
+    implementation(dependencies.project(":rtsp"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
 }

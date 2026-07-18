@@ -24,7 +24,7 @@ android {
 }
 
 dependencies {
-    implementation(projects.common)
+    implementation(dependencies.project(":common"))
 
     implementation(libs.ktor.network)
     implementation(libs.ktor.network.tls)

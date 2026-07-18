@@ -32,6 +32,8 @@ def main() -> int:
 
     files = candidate_files(root)
     for path in files:
+        if not path.exists():
+            continue
         try:
             text = path.read_bytes().decode("utf-8")
         except UnicodeDecodeError as error:

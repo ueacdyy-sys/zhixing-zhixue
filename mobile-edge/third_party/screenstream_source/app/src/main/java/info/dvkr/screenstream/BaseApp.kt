@@ -61,8 +61,7 @@ public abstract class BaseApp : Application() {
         initLogger(isDebuggable)
 
         val defaultModule = module {
-            single(createdAtStart = true) { AdMob(get()) }
-            single(createdAtStart = true) { AppStreamingAnalytics(get()) } bind (StreamingAnalytics::class)
+            single<StreamingAnalytics> { NoOpStreamingAnalytics }
             single { NotificationHelperImpl(get()) } bind (NotificationHelper::class)
         }
 

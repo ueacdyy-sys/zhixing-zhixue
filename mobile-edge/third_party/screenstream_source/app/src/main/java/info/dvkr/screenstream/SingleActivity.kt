@@ -31,7 +31,7 @@ import org.koin.android.ext.android.inject
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration.Companion.milliseconds
 
-public class SingleActivity : AppUpdateActivity() {
+public class SingleActivity : androidx.activity.ComponentActivity() {
 
     internal companion object {
         private const val MODULE_START_MAX_ATTEMPTS = 5
@@ -51,10 +51,9 @@ public class SingleActivity : AppUpdateActivity() {
 
         setContent {
             ScreenStreamTheme {
-                ScreenStreamContent(updateFlow = updateFlow)
+                ScreenStreamContent()
             }
         }
-        AppReview.startTracking(activity = this, streamingModulesManager = streamingModulesManager)
 
         lifecycle.addObserver(LifecycleEventObserver { _, event ->
             if (event != Lifecycle.Event.ON_START && event != Lifecycle.Event.ON_RESUME) return@LifecycleEventObserver

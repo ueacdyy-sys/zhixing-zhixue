@@ -13,8 +13,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,10 +20,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
@@ -33,7 +29,6 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.currentWindowSize
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
@@ -52,7 +47,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toIntRect
 import androidx.compose.ui.unit.toRect
@@ -68,26 +62,15 @@ import info.dvkr.screenstream.ui.tabs.about.AboutTabContent
 import info.dvkr.screenstream.ui.tabs.exit.ExitTabContent
 import info.dvkr.screenstream.ui.tabs.settings.SettingsTabContent
 import info.dvkr.screenstream.ui.tabs.stream.StreamTabContent
-import kotlinx.coroutines.flow.StateFlow
 
 @Composable
-internal fun ScreenStreamContent(
-    updateFlow: StateFlow<((Boolean) -> Unit)?>,
-    modifier: Modifier = Modifier
-) {
+internal fun ScreenStreamContent(modifier: Modifier = Modifier) {
     MainContent(
         modifier = modifier
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .fillMaxSize()
     )
 
-    val updateFlowState = updateFlow.collectAsStateWithLifecycle()
-    if (updateFlowState.value != null) {
-        AppUpdateRequestUI(
-            onConfirmButtonClick = { updateFlowState.value?.invoke(true) },
-            onDismissButtonClick = { updateFlowState.value?.invoke(false) }
-        )
-    }
 
     val context = LocalContext.current
     val isNotificationPermissionMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -102,7 +85,6 @@ internal fun ScreenStreamContent(
         LocalNetworkPermission(enabled = localNetworkPermissionEnabled.value)
     }
 }
-
 internal enum class AppTabs(
     @field:DrawableRes internal val image: Int,
     @field:DrawableRes internal val imageSelected: Int,
@@ -200,10 +182,9 @@ private fun MainContent(
                     AppTabs.ABOUT -> AboutTabContent(modifier = Modifier.fillMaxSize())
                     AppTabs.EXIT -> ExitTabContent(modifier = Modifier.fillMaxSize())
                 }
-            }
         }
     }
-
+}
     val view = LocalView.current
     if (view.isInEditMode.not()) {
         val statusBarColor = MaterialTheme.colorScheme.background
@@ -215,56 +196,6 @@ private fun MainContent(
             (view.context as ComponentActivity).apply {
                 enableEdgeToEdge(statusBarColor = statusBarColor, navigationBarColor = navigationBarColor)
                 window.decorView.setBackgroundColor(statusBarColor.toArgb())
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AppUpdateRequestUI(
-    onConfirmButtonClick: () -> Unit,
-    onDismissButtonClick: () -> Unit,
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismissButtonClick,
-        shape = MaterialTheme.shapes.medium,
-        dragHandle = null
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(16.dp)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Icon(painter = painterResource(R.drawable.ic_notification_small_24dp), contentDescription = null)
-            Text(
-                text = stringResource(id = R.string.app_activity_update_dialog_title),
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp + 24.dp),
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
-        Text(
-            text = stringResource(id = R.string.app_activity_update_dialog_message),
-            modifier = Modifier
-                .padding(horizontal = 16.dp)
-                .fillMaxWidth()
-        )
-        Row(
-            modifier = Modifier
-                .padding(end = 16.dp)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            TextButton(
-                onClick = onDismissButtonClick,
-                modifier = Modifier.padding(end = 16.dp)
-            ) {
-                Text(text = stringResource(id = android.R.string.cancel))
-            }
-            TextButton(onClick = onConfirmButtonClick) {
-                Text(text = stringResource(id = R.string.app_activity_update_dialog_restart))
             }
         }
     }

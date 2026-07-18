@@ -1,42 +1,30 @@
-# Repository Guidelines
+# 知行智学 Android 工程约束
 
-## Purpose & Modes
-ScreenStream streams Android screen + audio. Modes: Local (MJPEG), Global (WebRTC), and RTSP. RTSP has two sub‑modes: server (default) hosts this device; client connects to an external RTSP media server. F‑Droid builds are ad‑free and exclude WebRTC; PlayStore builds include ads + WebRTC.
+## 产品与模块
 
-## Project Structure & Modules
-- `app`: Compose UI shell, DI wiring, and flavors (`app/src/PlayStore` adds ads/WebRTC; `app/src/FDroid` strips them).
-- `common`: shared UI, preferences helpers, logging, utilities.
-- `mjpeg`: embedded Ktor HTTP server for local MJPEG streaming.
-- `rtsp`: RTSP server/client implementation and settings.
-- `webrtc`: WebRTC streaming (PlayStore flavor only).
+- `app`：学生端 Compose 壳与授权编排。
+- `common`：通用设置、通知、日志和 UI 工具。
+- `rtsp`：唯一媒体传输内核；只处理用户授权后的 RTSP。
+- `learning-domain`：纯 Kotlin 领域模型与质量门控；不得依赖 Android、RTSP、Koin 或平台规则。
+- `learning-application`：领域用例与端口。
+- `edge-android`：Android 本地存储、通知、会话和 RTSP 适配器。
 
-## Build & SDK Baseline
-- Kotlin `explicitApi()` with JVM toolchain 17.
-- SDKs: min 23, target/compile 36; build tools 36.0.0; NDK 28.2.13676358.
-- `./gradlew :app:assembleFDroidDebug` — build the F-Droid debug APK.
-- `./gradlew :app:assemblePlayStoreDebug` — build the Play Store debug APK.
-- Build types: release enables minify/shrink + Crashlytics mapping upload.
-- Flavors: `FDroid`, `PlayStore`. PlayStore reads ads from `local.properties` (`ad.pubId`, `ad.unitIds`).
+不保留 MJPEG、WebRTC、PlayStore 风味、广告、Firebase 或上游云服务。
 
-## Coding Style & Naming Conventions
-Kotlin follows the official style (`kotlin.code.style=official`) and uses explicit API mode in the app module; keep public APIs explicit and well-typed.
-Prefer 4-space indentation and Android Studio formatting.
-Product flavors are PascalCase (`FDroid`, `PlayStore`), and module names are lowercase (`common`, `mjpeg`, `rtsp`, `webrtc`).
+## 构建
 
-## Localization Rules (Strings)
-- English `values/strings.xml` is the source of truth for **key order and blank lines**.
-- Every locale file must mirror English key order **and** blank-line placement between `<string>` tags exactly.
-- Strings live in module `res/values` (app, mjpeg, rtsp, webrtc). Avoid hardcoded literals.
-- Use compact AOSP‑style UI terms; prefer “stream”/“device”. Use loanwords when standard, otherwise localize.
+真实目录为 `C:\Users\Administrator\Desktop\知行智学`。Windows 构建必须从 ASCII Junction 启动：
 
+```powershell
+cd C:\ZhixingZhixue\mobile-edge\third_party\screenstream_source
+.\gradlew.bat --offline :learning-domain:test :app:assembleDebug :app:lintDebug
+```
 
-## Security & Configuration Tips
-`local.properties` is read for Play Store ad identifiers; keep it uncommitted.
-The debug keystore is checked in for convenience; do not use it for release builds.
-Keep WebRTC signaling endpoints configurable; never hardcode credentials.
+`local.properties` 仅配置本机 SDK，不得加入 Git。Debug 使用 Android 标准 debug keystore；发布签名由受控发布流程提供，禁止在源码、脚本或文档中硬编码口令。
 
-When debugging crashes/ANRs, always use the Firebase Crashlytics MCP tools to fetch the latest issues and details before proposing code changes.
+## 行为与安全
 
-Prefer Android CLI for Android-specific tasks, use Android Studio MCP/Agent tooling when IDE integration helps, and fall back to raw terminal or Gradle commands only for unsupported operations, verification, or debugging.
-
-Use a connected physical Android device for app run/test when available. If none is connected, ask before launching an emulator.
+- 用户必须主动完成 MediaProjection 授权；不得自动录屏、自动控制第三方 App 或绕过 DRM。
+- 单帧/OCR、无同源音频或时间不连续媒体只能为 `CANDIDATE_ONLY`。
+- Debug 广播只可供 ADB shell 调试，不得进入发布控制面，不记录 Intent extras。
+- 保留 MIT 许可证和 `THIRD_PARTY_NOTICES.md`；不得沿用上游隐私政策、商店素材或外部服务声明。

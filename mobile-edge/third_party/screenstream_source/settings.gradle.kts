@@ -32,9 +32,7 @@ rootProject.name = "ZhixingZhixueMobile"
 
 include(":app")
 include(":common")
-include(":mjpeg")
 include(":rtsp")
-include(":webrtc")
 include(":learning-domain")
 include(":learning-application")
 include(":edge-android")

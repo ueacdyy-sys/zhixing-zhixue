@@ -8,7 +8,7 @@ kotlin {
 }
 
 dependencies {
-    api(projects.learningDomain)
+    api(dependencies.project(":learning-domain"))
     api(libs.kotlinx.coroutines.android)
     testImplementation(kotlin("test"))
 }

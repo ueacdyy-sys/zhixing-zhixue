@@ -21,24 +21,8 @@ compose-bom = "2026.06.01"
 
 xlog = "1.11.1"
 
-#MJPEG
+# RTSP transport
 ktor = "3.5.1"
-
-#PlayStore-WebRTC
-play-services-base = "18.10.0"
-play-services-tasks = "18.4.1"
-play-integrity = "1.6.0"
-socket = "2.1.2"
-okio = "3.17.0"
-okhttp = "5.4.0"
-
-#PlayStore-App
-play-app-update = "2.1.0"
-play-app-review = "2.0.2"
-ads-mobile-sdk = "1.2.1"
-firebase-bom = "34.15.0"
-google-services = "4.5.0"
-crashlytics-gradle = "3.0.7"
 
 [libraries]
 android-tools-desugar = { module = "com.android.tools:desugar_jdk_libs", version.ref = "android-tools-desugar" }
@@ -69,36 +53,9 @@ androidx-compose-material3-adaptive-navigation = { module = "androidx.compose.ma
 
 xlog = { module = "com.elvishew:xlog", version.ref = "xlog" }
 
-#MJPEG
-ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
-ktor-server-compression = { module = "io.ktor:ktor-server-compression", version.ref = "ktor" }
-ktor-server-caching-headers = { module = "io.ktor:ktor-server-caching-headers", version.ref = "ktor" }
-ktor-server-default-headers = { module = "io.ktor:ktor-server-default-headers", version.ref = "ktor" }
-ktor-server-forwarded-header = { module = "io.ktor:ktor-server-forwarded-header", version.ref = "ktor" }
-ktor-server-cors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
-ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.ref = "ktor" }
-ktor-server-status-pages = { module = "io.ktor:ktor-server-status-pages", version.ref = "ktor" }
-
 #RTSP
 ktor-network = { module = "io.ktor:ktor-network", version.ref = "ktor" }
 ktor-network-tls = { module = "io.ktor:ktor-network-tls", version.ref = "ktor" }
-
-#PlayStore-WebRTC
-play-services-tasks = { module = "com.google.android.gms:play-services-tasks", version.ref = "play-services-tasks" }
-play-integrity = { module = "com.google.android.play:integrity", version.ref = "play-integrity" }
-socket = { module = "io.socket:socket.io-client", version.ref = "socket" }
-okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
-okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
-
-#PlayStore-App
-play-services-base = { module = "com.google.android.gms:play-services-base", version.ref = "play-services-base" }
-play-app-update = { module = "com.google.android.play:app-update-ktx", version.ref = "play-app-update" }
-play-app-review = { module = "com.google.android.play:review-ktx", version.ref = "play-app-review" }
-ads-mobile-sdk = { module = "com.google.android.libraries.ads.mobile.sdk:ads-mobile-sdk", version.ref = "ads-mobile-sdk" }
-firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
-firebase-analytics = { module = "com.google.firebase:firebase-analytics" }
-firebase-crashlytics = { module = "com.google.firebase:firebase-crashlytics" }
-firebase-crashlytics-ndk = { module = "com.google.firebase:firebase-crashlytics-ndk" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
@@ -106,7 +63,3 @@ androidLibrary = { id = "com.android.library", version.ref = "agp" }
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-parcelize = { id = "org.jetbrains.kotlin.plugin.parcelize", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-
-#PlayStore
-googleServices = { id = "com.google.gms.google-services", version.ref = "google-services" }
-firebaseCrashlytics = { id = "com.google.firebase.crashlytics", version.ref = "crashlytics-gradle" }
