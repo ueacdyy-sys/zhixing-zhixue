@@ -30,3 +30,15 @@ def test_keyframe_ocr_without_usable_text_is_not_a_candidate() -> None:
     assert result["evidence_refs"] == []
     assert result["learning_diagnosis"] is None
     assert result["interest_conclusion"] is None
+
+
+def test_keyframe_ocr_bounds_duplicate_ocr_noise() -> None:
+    result = build_keyframe_ocr_candidate(
+        session_id="mobile-session-001",
+        capture_id="mobile-capture-001",
+        frame_refs=["capture://mobile-capture-001/keyframes/0001.jpg"],
+        ocr_items=[{"text": "重复文本", "confidence": 0.9}] * 100
+        + [{"text": "x" * 500, "confidence": 0.9}],
+    )
+
+    assert result["ocr_excerpt"] == "重复文本"

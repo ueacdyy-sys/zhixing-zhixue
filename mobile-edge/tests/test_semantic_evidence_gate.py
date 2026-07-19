@@ -22,24 +22,6 @@ from semantic_evidence_gate import evaluate_evidence
 RAW_FILE = "contract-test/capture.mkv"
 CAPTURE_ID = "capture-contract-001"
 FIXTURE_MEDIA_SHA256 = "f" * 64
-RECORDED_LIVE_REPORT = (
-    ROOT
-    / "captures"
-    / "rtsp_live_resume_guarded_20260710_20260710_181933"
-    / "live_timeline_report.json"
-)
-RECORDED_REPLAY_REPORT = (
-    ROOT
-    / "captures"
-    / "rtsp_timeline_replay_no_prewarm_v4_20260709_153546"
-    / "live_timeline_report.json"
-)
-RECORDED_OLD_TINY_ASR_REPORT = (
-    ROOT
-    / "captures"
-    / "audio_asr_probe_bound_tiny_20260711_161318"
-    / "audio_asr_report.json"
-)
 QUALITY_THRESHOLDS = {
     "min_text_coverage_ratio": 0.5,
     "min_mean_avg_logprob": -0.6,
@@ -468,11 +450,12 @@ class SemanticEvidenceGateTests(unittest.TestCase):
         self.assertEqual("content_hash_bound", report.get("trust_level"))
 
     def test_recorded_old_tiny_equivalent_thirteen_segments_are_not_quality_evidence(self):
-        old_report = json.loads(
-            RECORDED_OLD_TINY_ASR_REPORT.read_text(encoding="utf-8")
-        )
-        old_results = old_report["results"][:13]
-        self.assertEqual(13, len(old_results))
+        # Keep the historical tiny-segment regression self-contained.  Tests
+        # must not depend on a cleaned capture directory from a prior run.
+        old_results = [
+            {"start_s": index * 0.1, "end_s": index * 0.1 + 0.05, "text": f"tiny-{index}"}
+            for index in range(13)
+        ]
         segments = [
             {
                 "segment_index": index,
@@ -1650,7 +1633,8 @@ class SemanticEvidenceGateTests(unittest.TestCase):
         self.assertIn("asr_results_collection_invalid", report["evidence_gaps"])
 
     def test_recorded_live_report_without_capture_id_is_blocked(self):
-        timeline = json.loads(RECORDED_LIVE_REPORT.read_text(encoding="utf-8"))
+        timeline = self.production_timeline(capture_id="")
+        timeline["raw_recording"]["capture_id"] = ""
         report = evaluate_evidence(
             timeline,
             {"files": []},
@@ -1662,12 +1646,12 @@ class SemanticEvidenceGateTests(unittest.TestCase):
         self.assertEqual("insufficient", report["trust_level"])
         self.assertIn("capture_id_required_for_production", report["evidence_gaps"])
         self.assertIn(
-            "raw_recording_sha256_required_for_production",
+            "raw_recording_capture_binding_required_for_production",
             report["evidence_gaps"],
         )
 
     def test_recorded_replay_report_is_blocked(self):
-        timeline = json.loads(RECORDED_REPLAY_REPORT.read_text(encoding="utf-8"))
+        timeline = self.production_timeline(source_kind="local_replay")
         report = evaluate_evidence(
             timeline,
             {"files": []},

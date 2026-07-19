@@ -171,7 +171,13 @@ def validate_microtask(task: dict[str, Any]) -> None:
     task_type = task.get("type")
     if task_type not in ALLOWED_MICROTASK_TYPES:
         raise EvidenceBuildError("microtask_type_forbidden", f"forbidden microtask type: {task_type}")
-    haystack = " ".join(str(value) for value in task.values()).lower()
+    # Policy metadata may legitimately contain words such as "exercise" while
+    # documenting what is forbidden.  Only student-visible content is subject
+    # to the language gate.
+    haystack = " ".join(
+        str(task.get(field, ""))
+        for field in ("type", "interest_entry", "lightweight_action")
+    ).lower()
     if any(pattern.lower() in haystack for pattern in FORBIDDEN_MICROTASK_PATTERNS):
         raise EvidenceBuildError("question_like_microtask_forbidden", "microtask looks like a question/exercise recommendation")
 

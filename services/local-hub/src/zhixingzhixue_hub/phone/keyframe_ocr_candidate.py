@@ -7,6 +7,8 @@ from typing import Any
 
 
 MIN_OCR_CONFIDENCE = 0.6
+MAX_OCR_EXCERPT_TERMS = 40
+MAX_OCR_EXCERPT_CHARS = 480
 
 
 def _usable_ocr_texts(ocr_items: Iterable[Mapping[str, Any]]) -> list[str]:
@@ -17,6 +19,27 @@ def _usable_ocr_texts(ocr_items: Iterable[Mapping[str, Any]]) -> list[str]:
         if text and isinstance(confidence, (int, float)) and confidence >= MIN_OCR_CONFIDENCE:
             texts.append(text)
     return texts
+
+
+def _bounded_excerpt(texts: Iterable[str]) -> str:
+    """Keep a compact, readable trace instead of persisting duplicate OCR noise."""
+    selected: list[str] = []
+    seen: set[str] = set()
+    used_chars = 0
+    for text in texts:
+        normalized = text.strip()
+        if not normalized or normalized in seen:
+            continue
+        separator_chars = 3 if selected else 0
+        if (
+            len(selected) >= MAX_OCR_EXCERPT_TERMS
+            or used_chars + separator_chars + len(normalized) > MAX_OCR_EXCERPT_CHARS
+        ):
+            break
+        selected.append(normalized)
+        seen.add(normalized)
+        used_chars += separator_chars + len(normalized)
+    return " | ".join(selected)
 
 
 def build_keyframe_ocr_candidate(
@@ -52,5 +75,5 @@ def build_keyframe_ocr_candidate(
         **base,
         "status": "CANDIDATE_ONLY",
         "evidence_refs": evidence_refs,
-        "ocr_excerpt": " | ".join(texts),
+        "ocr_excerpt": _bounded_excerpt(texts),
     }

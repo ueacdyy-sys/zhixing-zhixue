@@ -11,6 +11,7 @@ from typing import Any
 
 import cv2
 from rapidocr_onnxruntime import RapidOCR
+from unicode_image_io import read_image, write_image
 
 
 @dataclass
@@ -45,12 +46,13 @@ def crop_region(image, region: str):
 
 
 def run_ocr_on_image(engine: RapidOCR, image_path: Path, region: str, temp_dir: Path) -> OcrFrameResult:
-    image = cv2.imread(str(image_path))
+    image = read_image(image_path)
     if image is None:
         raise RuntimeError(f"failed to read image: {image_path}")
     crop = crop_region(image, region)
     crop_path = temp_dir / f"{image_path.stem}_{region}.jpg"
-    cv2.imwrite(str(crop_path), crop)
+    if not write_image(crop_path, crop):
+        raise RuntimeError(f"failed to write OCR crop: {crop_path}")
     t0 = time.perf_counter()
     result, elapse = engine(str(crop_path))
     wall_s = time.perf_counter() - t0

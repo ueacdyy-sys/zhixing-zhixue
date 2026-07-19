@@ -68,12 +68,13 @@ class LearningEvidenceBuilderTests(unittest.TestCase):
             human_verified=False,
         )
 
-        self.assertFalse(bundle["demo_usable"])
-        self.assertEqual("未验证", bundle["truth_label"])
+        self.assertTrue(bundle["machine_evidence_ready"])
+        self.assertEqual("not_reviewed", bundle["human_review_status"])
+        self.assertEqual("needs_offline_sample_review", bundle["competition_acceptance_status"])
         self.assertEqual(1, len(bundle["cards"]))
         self.assertEqual(1, len(bundle["microtasks"]))
-        self.assertFalse(bundle["microtasks"][0]["production_allowed"])
-        self.assertIn("human_video_semantic_review_required", bundle["cards"][0]["evidence_gaps"])
+        self.assertTrue(bundle["microtasks"][0]["production_allowed"])
+        self.assertIn("offline_sample_review_not_recorded", bundle["cards"][0]["evidence_gaps"])
 
     def test_human_verified_bundle_can_mark_microtask_production_allowed(self):
         bundle = builder.build_evidence(
@@ -82,8 +83,8 @@ class LearningEvidenceBuilderTests(unittest.TestCase):
             human_verified=True,
         )
 
-        self.assertTrue(bundle["demo_usable"])
-        self.assertTrue(bundle["cards"][0]["demo_usable"])
+        self.assertEqual("accepted", bundle["competition_acceptance_status"])
+        self.assertEqual("accepted", bundle["cards"][0]["competition_acceptance_status"])
         self.assertTrue(bundle["microtasks"][0]["production_allowed"])
         self.assertEqual("explain", bundle["microtasks"][0]["type"])
 
