@@ -1,4 +1,6 @@
 captures/
+artifacts/
+outputs/
 logs/
 *.mp4
 *.mkv
@@ -7,3 +9,17 @@ logs/
 *.log
 __pycache__/
 *.pyc
+env/
+models/
+vendor/
+_archive/
+third_party/screenstream_source/.edge-app-build/
+build-*.log
+build-*.err.log
+*_install*.xml
+*_state*.xml
+install_*.xml
+current_*.xml
+final_*.xml
+provider_*.xml
+upgrade_*.xml
