@@ -536,7 +536,10 @@ internal class RtspServerConnection(
                     if (sess != null && sess != sessionId) {
                         tcpStreamSocket.withWriteLock { writeAndFlush(serverMessageHandler.createErrorResponse(454, cSeq)) }
                     } else {
-                        tcpStreamSocket.withWriteLock { writeAndFlush(serverMessageHandler.createGetParameterResponse(cSeq, sessionId)) }
+                        val clock = MasterClock.snapshot()
+                        tcpStreamSocket.withWriteLock {
+                            writeAndFlush(serverMessageHandler.createGetParameterResponse(cSeq, sessionId, clock))
+                        }
                     }
                 }
 

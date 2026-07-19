@@ -1,6 +1,8 @@
 package info.dvkr.screenstream.rtsp.internal.rtsp.server
 
+import android.os.SystemClock
 import info.dvkr.screenstream.rtsp.internal.AudioParams
+import info.dvkr.screenstream.rtsp.internal.MasterClockSnapshot
 import info.dvkr.screenstream.rtsp.internal.VideoParams
 import info.dvkr.screenstream.rtsp.internal.rtsp.RtspMessage
 import info.dvkr.screenstream.rtsp.internal.rtsp.core.RtspBaseMessageHandler
@@ -122,10 +124,35 @@ internal class RtspServerMessageHandler(
             .withUserAgent(userAgent)
             .build()
 
-    internal fun createGetParameterResponse(cSeq: Int, sessionId: String): RtspMessage =
+    /**
+     * A measurement-only reply for a connected, user-authorized RTSP source.
+     *
+     * These headers deliberately contain timing facts only.  They do not expose
+     * media, controls, screen contents, or a way to start a projection.  A PC
+     * collector records this reply beside the corresponding RTSP connection so
+     * capture PTS can be tied to the phone's monotonic clock without an ADB
+     * round trip in the measured path.
+     */
+    internal fun createGetParameterResponse(
+        cSeq: Int,
+        sessionId: String,
+        clock: MasterClockSnapshot
+    ): RtspMessage =
         ResponseBuilder.ok()
             .withCSeq(cSeq)
             .apply { if (sessionId.isNotBlank()) withSession(sessionId) }
+            .header("X-Zhixing-Clock-Session-Epoch", clock.sessionEpochId.toString())
+            .header("X-Zhixing-Clock-Anchor-Elapsed-Ns", clock.anchorElapsedRealtimeNs?.toString() ?: "")
+            .header("X-Zhixing-Clock-Latest-Video-Pts-Us", clock.latestVideoPtsUs?.toString() ?: "")
+            .header("X-Zhixing-Clock-Latest-Audio-Pts-Us", clock.latestAudioPtsUs?.toString() ?: "")
+            .header("X-Zhixing-Clock-Last-Media-Emit-Elapsed-Ns", clock.lastMediaEmitElapsedRealtimeNs?.toString() ?: "")
+            .header("X-Zhixing-Clock-Last-Requested-Keyframe-Pts-Us", clock.lastRequestedKeyFramePtsUs?.toString() ?: "")
+            .header("X-Zhixing-Clock-Last-Requested-Keyframe-Emit-Elapsed-Ns", clock.lastRequestedKeyFrameEmitElapsedRealtimeNs?.toString() ?: "")
+            // This is the handset monotonic timestamp taken while serialising
+            // this exact reply.  Together with PC send/receive boundaries it
+            // permits a bounded NTP-style clock-offset estimate; do not infer
+            // phone-to-PC latency from unrelated monotonic clocks.
+            .header("X-Zhixing-Clock-Observed-Elapsed-Ns", SystemClock.elapsedRealtimeNanos().toString())
             .withUserAgent(userAgent)
             .build()
 

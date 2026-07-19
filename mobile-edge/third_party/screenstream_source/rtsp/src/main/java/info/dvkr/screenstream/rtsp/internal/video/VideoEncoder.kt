@@ -222,6 +222,7 @@ internal class VideoEncoder(
             return
         }
         runCatching {
+            MasterClock.markSyncFrameRequested()
             val bundle = Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }
             videoEncoder?.setParameters(bundle)
             XLog.v(getLog("requestKeyFrame", "Sync frame requested"))
@@ -257,12 +258,13 @@ internal class VideoEncoder(
                     outputBuffer.limit(info.offset + info.size)
 
                     val adjustedInfo = adjustedBufferInfo.apply {
-                        val forcedPtsUs = MasterClock.relativeTimeUs()
-                        set(info.offset, info.size, forcedPtsUs, info.flags)
+                        set(info.offset, info.size, info.presentationTimeUs, info.flags)
                     }
+                    MasterClock.recordVideoPtsUs(adjustedInfo.presentationTimeUs)
 
                     val flags = adjustedInfo.flags
                     val isKeyFrame = flags.hasFlag(MediaCodec.BUFFER_FLAG_KEY_FRAME)
+                    if (isKeyFrame) MasterClock.recordRequestedKeyFrameIfPending(adjustedInfo.presentationTimeUs)
                     if (flags.hasFlag(MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) {
                         if (!isCodecConfigSent) {
                             outputBuffer.duplicate().extractCodecConfig(adjustedInfo)?.let { (sps, pps, vps) ->

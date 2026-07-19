@@ -44,7 +44,9 @@ internal abstract class RtspBaseMessageHandler(
         private val CSEQ_REGEX = Regex("""CSeq\s*:\s*(\d+)""", RegexOption.IGNORE_CASE)
 
         @JvmStatic
-        private val METHOD_REGEX = Regex("""^([A-Za-z]+)\s+(\S+)\s+RTSP/\d+\.\d+""", RegexOption.IGNORE_CASE)
+        // RTSP defines compound method tokens such as GET_PARAMETER.  Restricting
+        // this to letters silently turned a valid standards method into UNKNOWN.
+        private val METHOD_REGEX = Regex("""^([A-Za-z_]+)\s+(\S+)\s+RTSP/\d+\.\d+""", RegexOption.IGNORE_CASE)
 
         @JvmStatic
         private val TRANSPORT_REGEX = Regex("""Transport\s*:\s*(.+)""", RegexOption.IGNORE_CASE)

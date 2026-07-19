@@ -73,7 +73,13 @@ public interface RtspSettings {
         public const val ENABLE_MIC: Boolean = false
         public const val MUTE_MIC: Boolean = false
         public const val VOLUME_MIC: Float = 1.0F
-        public const val ENABLE_DEVICE_AUDIO: Boolean = false
+        /**
+         * Authorized screen analysis needs the same-source media audio for ASR.
+         * Runtime RECORD_AUDIO permission and the system MediaProjection consent
+         * remain mandatory; this only makes the audio track part of a newly
+         * started authorized session instead of silently omitting it.
+         */
+        public const val ENABLE_DEVICE_AUDIO: Boolean = true
         public const val MUTE_DEVICE_AUDIO: Boolean = false
         public const val VOLUME_DEVICE_AUDIO: Float = 1.0F
         public const val STEREO_AUDIO: Boolean = false

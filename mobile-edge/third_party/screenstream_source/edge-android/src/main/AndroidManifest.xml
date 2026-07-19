@@ -3,5 +3,13 @@
         <receiver
             android:name=".StudentReceiptReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".CandidateNoticeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="cn.zhixingzhixue.mobile.action.SHOW_CANDIDATE_NOTICE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

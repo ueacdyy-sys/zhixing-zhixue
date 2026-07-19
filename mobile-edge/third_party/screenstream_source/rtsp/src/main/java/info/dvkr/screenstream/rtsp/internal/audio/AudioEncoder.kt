@@ -327,9 +327,9 @@ internal class AudioEncoder(
                     outputBuffer.limit(info.offset + info.size)
 
                     val adjustedInfo = MediaCodec.BufferInfo().apply {
-                        val forcedPtsUs = MasterClock.relativeTimeUs()
-                        set(info.offset, info.size, forcedPtsUs, info.flags)
+                        set(info.offset, info.size, info.presentationTimeUs, info.flags)
                     }
+                    MasterClock.recordAudioPtsUs(adjustedInfo.presentationTimeUs)
 
                     MediaFrame.AudioFrame(
                         data = outputBuffer,

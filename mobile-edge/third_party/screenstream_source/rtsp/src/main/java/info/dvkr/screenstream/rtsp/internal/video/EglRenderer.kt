@@ -5,6 +5,7 @@ import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
+import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
@@ -257,6 +258,7 @@ internal class EglRenderer(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
         GLES20.glUseProgram(0)
 
+        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, MasterClock.relativeTimeUs() * 1_000L)
         if (!EGL14.eglSwapBuffers(eglDisplay, eglSurface)) {
             throw RuntimeException("eglSwapBuffers failed: error 0x${Integer.toHexString(EGL14.eglGetError())}")
         }

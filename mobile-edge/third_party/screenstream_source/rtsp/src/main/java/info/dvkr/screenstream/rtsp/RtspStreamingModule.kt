@@ -249,4 +249,16 @@ public class RtspStreamingModule : StreamingModule {
             }
         }
     }
+
+    /** Request a key frame only from an already-running, user-authorized stream. */
+    @MainThread
+    public fun requestKeyFrame() {
+        check(Looper.getMainLooper().isCurrentThread) { "Only main thread allowed" }
+        val activeStreamingService = streamingService
+        if (_streamingServiceState.value is StreamingModule.State.Running && activeStreamingService != null) {
+            activeStreamingService.requestKeyFrame()
+        } else {
+            XLog.i(getLog("requestKeyFrame", "Ignoring; RTSP stream is not running"))
+        }
+    }
 }

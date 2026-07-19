@@ -146,6 +146,15 @@ internal class RtspStreamingService(
         return foregroundStartError
     }
 
+    /** Marshal an external sync-frame request onto the encoder's service thread. */
+    @AnyThread
+    internal fun requestKeyFrame() {
+        handler.post {
+            projectionState.active?.videoEncoder?.requestKeyFrame()
+                ?: XLog.i(getLog("requestKeyFrame", "Ignoring; no active projection"))
+        }
+    }
+
     private fun clearPreparedProjectionStartIfNeeded(foregroundStartProcessed: Boolean, foregroundStartError: Throwable?) {
         if (!foregroundStartProcessed || foregroundStartError != null) return
         projectionCoordinator.stop()
