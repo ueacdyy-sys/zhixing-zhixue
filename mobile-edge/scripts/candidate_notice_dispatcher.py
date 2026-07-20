@@ -31,17 +31,22 @@ def _message(artifact_root: Path, evidence_uris: list[str]) -> str:
     return "已形成一段同源音视频与文字候选证据，可自主查看。"
 
 
-def _interest_level(dwell_seconds: float) -> str:
-    if dwell_seconds < 3:
-        return "L0"
-    if dwell_seconds < 8:
-        return "L1"
-    if dwell_seconds <= 20:
-        return "L2"
-    return "L3"
+def _l1_eligibility(*, fusion_mode: str, is_current_visit: bool, is_fresh: bool) -> tuple[bool, str]:
+    """L1 is evidence eligibility, never a dwell-time or notification-count level.
+
+    L2–L4 are student-initiated learning paths and must not be selected here.
+    """
+
+    if not is_current_visit:
+        return False, "VISIT_NO_LONGER_ACTIVE"
+    if fusion_mode != "TRIMODAL":
+        return False, "TRIMODAL_EVIDENCE_REQUIRED"
+    if not is_fresh:
+        return False, "LIVE_EDGE_LAG_EXCEEDED"
+    return True, "CURRENT_TRIMODAL_CANDIDATE"
 
 
-def _eligible_candidates(ledger_path: Path, maximum_lag_ns: int) -> list[tuple[str, list[str], str, float]]:
+def _eligible_candidates(ledger_path: Path, maximum_lag_ns: int) -> list[tuple[str, list[str], str]]:
     with sqlite3.connect(ledger_path) as connection:
         connection.row_factory = sqlite3.Row
         edge = connection.execute("SELECT MAX(end_pts_ns) FROM fragments").fetchone()[0]
@@ -58,16 +63,19 @@ def _eligible_candidates(ledger_path: Path, maximum_lag_ns: int) -> list[tuple[s
             """,
             (active["visit_id"],),
         ).fetchall()
-        dwell_seconds = (int(edge) - int(active["start_pts_ns"])) / 1_000_000_000
-        level = _interest_level(dwell_seconds)
-        eligible: list[tuple[str, list[str], str, float]] = []
+        eligible: list[tuple[str, list[str], str]] = []
         for row in rows:
-            if int(edge) - int(row["end_pts_ns"]) > maximum_lag_ns:
+            allowed, reason = _l1_eligibility(
+                fusion_mode="TRIMODAL",
+                is_current_visit=True,
+                is_fresh=int(edge) - int(row["end_pts_ns"]) <= maximum_lag_ns,
+            )
+            if not allowed:
                 continue
             evidence = connection.execute(
                 "SELECT artifact_uri FROM lane_evidence WHERE window_id = ? ORDER BY lane", (row["window_id"],)
             ).fetchall()
-            eligible.append((str(row["window_id"]), [str(item["artifact_uri"]) for item in evidence], level, dwell_seconds))
+            eligible.append((str(row["window_id"]), [str(item["artifact_uri"]) for item in evidence], reason))
         return eligible
 
 
@@ -100,19 +108,14 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("a", encoding="utf-8", newline="\n") as output:
         while True:
-            for window_id, evidence_uris, level, dwell_seconds in _eligible_candidates(args.ledger, int(args.maximum_lag_seconds * 1_000_000_000)):
+            for window_id, evidence_uris, eligibility_reason in _eligible_candidates(args.ledger, int(args.maximum_lag_seconds * 1_000_000_000)):
                 if window_id in recorded:
-                    continue
-                if level in {"L0", "L1", "L2"}:
-                    output.write(json.dumps({"window_id": window_id, "pc_monotonic_ns": time.monotonic_ns(), "level": level, "dwell_seconds": dwell_seconds, "status": "CANDIDATE_ONLY_NO_HEADS_UP"}, ensure_ascii=False, separators=(",", ":")) + "\n")
-                    output.flush()
-                    recorded.add(window_id)
                     continue
                 if time.monotonic() - last_sent < args.minimum_interval_seconds:
                     continue
                 message = _message(args.artifact_root, evidence_uris)
                 ok, detail = _send(args.adb, args.serial, window_id, message)
-                event = {"window_id": window_id, "pc_monotonic_ns": time.monotonic_ns(), "level": level, "dwell_seconds": dwell_seconds, "status": "DELIVERED_HEADS_UP" if ok else "FAILED", "detail": detail}
+                event = {"window_id": window_id, "pc_monotonic_ns": time.monotonic_ns(), "stage": "L1_ELIGIBLE", "eligibility_reason": eligibility_reason, "status": "DELIVERED_HEADS_UP" if ok else "FAILED", "detail": detail}
                 output.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
                 output.flush()
                 if ok:

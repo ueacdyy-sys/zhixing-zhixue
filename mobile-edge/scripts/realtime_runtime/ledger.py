@@ -116,10 +116,24 @@ class SealedWindowLedger:
                 PRIMARY KEY(window_id, lane),
                 FOREIGN KEY(window_id, lane) REFERENCES jobs(window_id, lane)
             );
+            CREATE TABLE IF NOT EXISTS fused_candidate_events (
+                window_id TEXT PRIMARY KEY,
+                visit_id TEXT NOT NULL,
+                source_context TEXT NOT NULL,
+                start_pts_ns INTEGER NOT NULL,
+                end_pts_ns INTEGER NOT NULL,
+                evidence_uris_json TEXT NOT NULL,
+                fusion_mode TEXT NOT NULL,
+                fused_at_ns INTEGER NOT NULL,
+                classification TEXT NOT NULL,
+                FOREIGN KEY(window_id) REFERENCES semantic_windows(window_id)
+            );
             CREATE INDEX IF NOT EXISTS jobs_claim_index
                 ON jobs(lane, state, next_eligible_ns, lease_deadline_ns);
             CREATE INDEX IF NOT EXISTS windows_session_index
                 ON semantic_windows(session_id, start_pts_ns, end_pts_ns);
+            CREATE INDEX IF NOT EXISTS fused_candidate_events_pts_index
+                ON fused_candidate_events(start_pts_ns, end_pts_ns, window_id);
             """
         )
         self._ensure_column("semantic_windows", "fusion_mode", "TEXT NOT NULL DEFAULT 'TRIMODAL'")
@@ -501,22 +515,62 @@ class SealedWindowLedger:
                 for row in evidence
             ):
                 continue
+            candidate = FusedCandidate(
+                window_id=str(window["window_id"]),
+                visit_id=str(window["visit_id"]),
+                source_context=SourceContext(window["source_context"]),
+                start_pts_ns=int(window["start_pts_ns"]),
+                end_pts_ns=int(window["end_pts_ns"]),
+                evidence_uris=tuple(str(row["artifact_uri"]) for row in evidence),
+                fused_at_ns=now_ns,
+                fusion_mode=FusionMode(window["fusion_mode"]),
+            )
             with self._connection:
                 updated = self._connection.execute(
                     "UPDATE semantic_windows SET fused_at_ns = ? WHERE window_id = ? AND fused_at_ns IS NULL",
                     (now_ns, window["window_id"]),
                 )
-            if updated.rowcount:
-                candidates.append(
-                    FusedCandidate(
-                        window_id=window["window_id"],
-                        visit_id=window["visit_id"],
-                        source_context=SourceContext(window["source_context"]),
-                        start_pts_ns=window["start_pts_ns"],
-                        end_pts_ns=window["end_pts_ns"],
-                        evidence_uris=tuple(row["artifact_uri"] for row in evidence),
-                        fused_at_ns=now_ns,
-                        fusion_mode=FusionMode(window["fusion_mode"]),
+                if updated.rowcount:
+                    self._connection.execute(
+                        """
+                        INSERT INTO fused_candidate_events(
+                            window_id, visit_id, source_context, start_pts_ns, end_pts_ns,
+                            evidence_uris_json, fusion_mode, fused_at_ns, classification
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            candidate.window_id,
+                            candidate.visit_id,
+                            candidate.source_context.value,
+                            candidate.start_pts_ns,
+                            candidate.end_pts_ns,
+                            json.dumps(candidate.evidence_uris, separators=(",", ":")),
+                            candidate.fusion_mode.value,
+                            candidate.fused_at_ns,
+                            candidate.classification,
+                        ),
                     )
-                )
+            if updated.rowcount:
+                candidates.append(candidate)
         return candidates
+
+    def fused_candidate_events(self) -> list[FusedCandidate]:
+        """Read the durable fused-candidate outbox in media PTS order."""
+
+        rows = self._connection.execute(
+            "SELECT * FROM fused_candidate_events ORDER BY start_pts_ns, end_pts_ns, window_id"
+        ).fetchall()
+        return [
+            FusedCandidate(
+                window_id=str(row["window_id"]),
+                visit_id=str(row["visit_id"]),
+                source_context=SourceContext(row["source_context"]),
+                start_pts_ns=int(row["start_pts_ns"]),
+                end_pts_ns=int(row["end_pts_ns"]),
+                evidence_uris=tuple(json.loads(row["evidence_uris_json"])),
+                fused_at_ns=int(row["fused_at_ns"]),
+                fusion_mode=FusionMode(row["fusion_mode"]),
+                classification=str(row["classification"]),
+            )
+            for row in rows
+        ]

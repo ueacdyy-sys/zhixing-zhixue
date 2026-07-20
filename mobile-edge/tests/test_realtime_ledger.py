@@ -137,6 +137,25 @@ class SealedWindowLedgerTests(unittest.TestCase):
                 self.assertEqual("CANDIDATE_ONLY", candidates[0].classification)
                 self.assertEqual([], ledger.fuse_ready(now_ns=101))
 
+    def test_fused_candidate_event_is_durable_and_emitted_exactly_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "ledger.sqlite"
+            with SealedWindowLedger(path) as ledger:
+                self.open_visit(ledger)
+                ledger.append_fragment(fragment("f1", 0, 2, HASH_A))
+                ledger.create_window(window("w1", 0, 2, (HASH_A,)))
+                for index, lane in enumerate((Lane.ASR, Lane.OCR, Lane.VLM), 1):
+                    lease = ledger.claim(lane, f"worker-{lane}", now_ns=index, lease_ns=100)
+                    ledger.complete(lease, evidence("w1", lane, 0, 2, (HASH_A,), index + 10))
+                ledger.fuse_ready(now_ns=100)
+                events = ledger.fused_candidate_events()
+                self.assertEqual(["w1"], [item.window_id for item in events])
+                self.assertEqual(FusionMode.TRIMODAL, events[0].fusion_mode)
+
+            with SealedWindowLedger(path) as restarted:
+                self.assertEqual(["w1"], [item.window_id for item in restarted.fused_candidate_events()])
+                self.assertEqual([], restarted.fuse_ready(now_ns=101))
+
     def test_late_window_cannot_advance_contiguous_lane_watermark_over_gap(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with SealedWindowLedger(Path(temp_dir) / "ledger.sqlite") as ledger:
