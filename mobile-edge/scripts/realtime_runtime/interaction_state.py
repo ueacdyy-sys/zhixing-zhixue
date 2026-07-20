@@ -153,8 +153,14 @@ def reduce_interaction(state: InteractionState, event: InteractionEvent) -> Tran
         next_state = InteractionState(PlaybackState.PLAYING, state.surface, 1.0, state.content_visit_open, state.media_episode + 1)
         effects.extend((ReducerEffect.START_NEW_MEDIA_EPISODE, ReducerEffect.RESUME_MEDIA_ANALYSIS))
     elif kind is EventType.SPEED_ADJUST:
-        next_state = InteractionState(state.playback, state.surface, event.playback_rate or state.playback_rate, state.content_visit_open, state.media_episode)
-        effects.append(ReducerEffect.RECORD_INTERFACE_CONTEXT)
+        next_state = InteractionState(
+            state.playback,
+            state.surface,
+            event.playback_rate or state.playback_rate,
+            state.content_visit_open,
+            state.media_episode + 1,
+        )
+        effects.extend((ReducerEffect.START_NEW_MEDIA_EPISODE, ReducerEffect.RECORD_INTERFACE_CONTEXT))
     elif kind in CONTENT_SWITCH:
         next_state = InteractionState(PlaybackState.PLAYING, FocusSurface.FEED if kind in {EventType.RETURN_BACK, EventType.REFRESH_FEED} else FocusSurface.VIDEO, 1.0, True, state.media_episode + 1)
         effects.extend((ReducerEffect.CLOSE_CONTENT_VISIT, ReducerEffect.START_CONTENT_VISIT, ReducerEffect.RESUME_MEDIA_ANALYSIS))
