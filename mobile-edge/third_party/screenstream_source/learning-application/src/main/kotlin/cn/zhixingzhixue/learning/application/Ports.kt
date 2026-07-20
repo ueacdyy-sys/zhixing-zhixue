@@ -1,6 +1,7 @@
 package cn.zhixingzhixue.learning.application
 
 import cn.zhixingzhixue.learning.domain.CaptureId
+import cn.zhixingzhixue.learning.domain.CandidateCard
 import cn.zhixingzhixue.learning.domain.DeviceConnection
 import cn.zhixingzhixue.learning.domain.DeviceId
 import cn.zhixingzhixue.learning.domain.KnowledgePointCandidate
@@ -39,6 +40,12 @@ public interface MediaTransportPort {
 public interface CandidateRepository {
     public suspend fun upsert(candidate: KnowledgePointCandidate)
     public fun observe(sessionId: MobileSessionId): Flow<List<KnowledgePointCandidate>>
+}
+
+/** Phone cards are immutable candidate evidence envelopes, kept separate from inferred profiles. */
+public interface CandidateCardRepository {
+    public suspend fun upsert(card: CandidateCard)
+    public fun observe(): Flow<List<CandidateCard>>
 }
 
 public interface SessionPort {

@@ -7,6 +7,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import cn.zhixingzhixue.learning.domain.CandidateCard
+import cn.zhixingzhixue.learning.domain.CandidateCardGate
+import cn.zhixingzhixue.learning.domain.CandidateCardId
+import cn.zhixingzhixue.learning.domain.CandidateEvidenceFact
+import cn.zhixingzhixue.learning.domain.CandidateEvidenceLane
+import cn.zhixingzhixue.learning.domain.CaptureId
+import cn.zhixingzhixue.learning.domain.LocalEvidenceRef
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 
 /**
  * Privileged diagnostic bridge for a locally authorized edge analyser.
@@ -18,6 +27,9 @@ import androidx.core.app.NotificationCompat
 public class CandidateNoticeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_SHOW_CANDIDATE_NOTICE) return
+        candidateCard(intent.getStringExtra(EXTRA_CANDIDATE_CARD_JSON))?.let { card ->
+            runBlocking { AndroidCandidateCardRepository(context.applicationContext).upsert(card) }
+        }
         val windowId = intent.getStringExtra(EXTRA_WINDOW_ID)?.takeIf { it.isNotBlank() } ?: return
         val title = intent.getStringExtra(EXTRA_TITLE)?.take(80) ?: "发现一段可回看内容"
         val message = intent.getStringExtra(EXTRA_MESSAGE)?.take(240) ?: "已形成候选证据，可自主查看。"
@@ -50,11 +62,53 @@ public class CandidateNoticeReceiver : BroadcastReceiver() {
         manager.notify(windowId.hashCode(), notification)
     }
 
+    private fun candidateCard(raw: String?): CandidateCard? = runCatching {
+        if (raw.isNullOrBlank() || raw.length > MAX_CARD_JSON_CHARS) return null
+        val document = JSONObject(raw)
+        if (
+            document.optString("schema_version") != "candidate_card.v1" ||
+            document.optString("classification") != "CANDIDATE_ONLY" ||
+            document.optString("source_context") != "PHONE_DAILY"
+        ) {
+            return null
+        }
+        val range = document.getJSONObject("media_range")
+        val facts = document.getJSONArray("facts").let { entries ->
+            List(entries.length()) { index ->
+                entries.getJSONObject(index).let { fact ->
+                    CandidateEvidenceFact(
+                        CandidateEvidenceLane.valueOf(fact.getString("lane")),
+                        fact.getString("text").take(MAX_FACT_CHARS),
+                    )
+                }
+            }
+        }
+        val refs = document.getJSONArray("facts").let { entries ->
+            List(entries.length()) { index ->
+                LocalEvidenceRef(entries.getJSONObject(index).getString("evidence_uri"))
+            }
+        }
+        CandidateCardGate.fromTrimodalEvidence(
+            id = CandidateCardId(document.getString("card_id")),
+            captureId = CaptureId(document.getString("window_id")),
+            visitId = document.getString("visit_id"),
+            startPtsNs = range.getLong("start_pts_ns"),
+            endPtsNs = range.getLong("end_pts_ns"),
+            evidenceRefs = refs,
+            facts = facts,
+            displayExcerpt = document.getString("display_excerpt").take(MAX_EXCERPT_CHARS),
+        )
+    }.getOrNull()
+
     public companion object {
         public const val ACTION_SHOW_CANDIDATE_NOTICE: String = "cn.zhixingzhixue.mobile.action.SHOW_CANDIDATE_NOTICE"
         public const val EXTRA_WINDOW_ID: String = "window_id"
         public const val EXTRA_TITLE: String = "title"
         public const val EXTRA_MESSAGE: String = "message"
+        public const val EXTRA_CANDIDATE_CARD_JSON: String = "candidate_card_json"
         private const val CHANNEL_ID: String = "student_candidate_notice_v1"
+        private const val MAX_CARD_JSON_CHARS: Int = 12_000
+        private const val MAX_FACT_CHARS: Int = 240
+        private const val MAX_EXCERPT_CHARS: Int = 240
     }
 }

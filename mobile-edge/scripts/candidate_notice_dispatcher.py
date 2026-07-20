@@ -9,26 +9,12 @@ import subprocess
 import time
 from pathlib import Path
 
+from realtime_runtime.candidate_card import CandidateCardBuildError, build_candidate_card
+from realtime_runtime.contracts import FusedCandidate, FusionMode, SourceContext
+
 
 COMPONENT = "cn.zhixingzhixue.mobile/cn.zhixingzhixue.edge.android.CandidateNoticeReceiver"
 ACTION = "cn.zhixingzhixue.mobile.action.SHOW_CANDIDATE_NOTICE"
-
-
-def _message(artifact_root: Path, evidence_uris: list[str]) -> str:
-    for uri in evidence_uris:
-        if not uri.startswith("local://artifact/"):
-            continue
-        file = artifact_root / uri.rsplit("/", 1)[-1]
-        try:
-            document = json.loads(file.read_text(encoding="utf-8"))
-            result = document.get("result", {})
-            if isinstance(result, dict):
-                nested = result.get("raw_model_text")
-                if isinstance(nested, str) and nested.strip():
-                    return nested.strip()[:180]
-        except (OSError, json.JSONDecodeError):
-            continue
-    return "已形成一段同源音视频与文字候选证据，可自主查看。"
 
 
 def _l1_eligibility(*, fusion_mode: str, is_current_visit: bool, is_fresh: bool) -> tuple[bool, str]:
@@ -46,7 +32,7 @@ def _l1_eligibility(*, fusion_mode: str, is_current_visit: bool, is_fresh: bool)
     return True, "CURRENT_TRIMODAL_CANDIDATE"
 
 
-def _eligible_candidates(ledger_path: Path, maximum_lag_ns: int) -> list[tuple[str, list[str], str]]:
+def _eligible_candidates(ledger_path: Path, artifact_root: Path, maximum_lag_ns: int) -> list[tuple[dict[str, object], str]]:
     with sqlite3.connect(ledger_path) as connection:
         connection.row_factory = sqlite3.Row
         edge = connection.execute("SELECT MAX(end_pts_ns) FROM fragments").fetchone()[0]
@@ -57,13 +43,13 @@ def _eligible_candidates(ledger_path: Path, maximum_lag_ns: int) -> list[tuple[s
             return []
         rows = connection.execute(
             """
-            SELECT window_id, end_pts_ns FROM semantic_windows
-            WHERE fused_at_ns IS NOT NULL AND visit_id = ? AND fusion_mode = 'TRIMODAL'
-            ORDER BY fused_at_ns
+            SELECT * FROM fused_candidate_events
+            WHERE visit_id = ? AND fusion_mode = 'TRIMODAL'
+            ORDER BY start_pts_ns, end_pts_ns, window_id
             """,
             (active["visit_id"],),
         ).fetchall()
-        eligible: list[tuple[str, list[str], str]] = []
+        eligible: list[tuple[dict[str, object], str]] = []
         for row in rows:
             allowed, reason = _l1_eligibility(
                 fusion_mode="TRIMODAL",
@@ -72,19 +58,34 @@ def _eligible_candidates(ledger_path: Path, maximum_lag_ns: int) -> list[tuple[s
             )
             if not allowed:
                 continue
-            evidence = connection.execute(
-                "SELECT artifact_uri FROM lane_evidence WHERE window_id = ? ORDER BY lane", (row["window_id"],)
-            ).fetchall()
-            eligible.append((str(row["window_id"]), [str(item["artifact_uri"]) for item in evidence], reason))
+            candidate = FusedCandidate(
+                window_id=str(row["window_id"]),
+                visit_id=str(row["visit_id"]),
+                source_context=SourceContext(row["source_context"]),
+                start_pts_ns=int(row["start_pts_ns"]),
+                end_pts_ns=int(row["end_pts_ns"]),
+                evidence_uris=tuple(json.loads(row["evidence_uris_json"])),
+                fused_at_ns=int(row["fused_at_ns"]),
+                fusion_mode=FusionMode(row["fusion_mode"]),
+                classification=str(row["classification"]),
+            )
+            try:
+                eligible.append((build_candidate_card(candidate, artifact_root=artifact_root), reason))
+            except CandidateCardBuildError:
+                continue
         return eligible
 
 
-def _send(adb: str, serial: str, window_id: str, message: str) -> tuple[bool, str]:
+def _send(adb: str, serial: str, card: dict[str, object]) -> tuple[bool, str]:
+    window_id = str(card["window_id"])
+    message = str(card["display_excerpt"])
+    encoded_card = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
     command = [
         adb, "-s", serial, "shell", "am", "broadcast", "-n", COMPONENT, "-a", ACTION,
         "--es", "window_id", window_id,
         "--es", "title", "发现一段可回看内容",
         "--es", "message", message,
+        "--es", "candidate_card_json", encoded_card,
     ]
     completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
     detail = ((completed.stdout or "") + (completed.stderr or "")).strip()
@@ -108,13 +109,13 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("a", encoding="utf-8", newline="\n") as output:
         while True:
-            for window_id, evidence_uris, eligibility_reason in _eligible_candidates(args.ledger, int(args.maximum_lag_seconds * 1_000_000_000)):
+            for card, eligibility_reason in _eligible_candidates(args.ledger, args.artifact_root, int(args.maximum_lag_seconds * 1_000_000_000)):
+                window_id = str(card["window_id"])
                 if window_id in recorded:
                     continue
                 if time.monotonic() - last_sent < args.minimum_interval_seconds:
                     continue
-                message = _message(args.artifact_root, evidence_uris)
-                ok, detail = _send(args.adb, args.serial, window_id, message)
+                ok, detail = _send(args.adb, args.serial, card)
                 event = {"window_id": window_id, "pc_monotonic_ns": time.monotonic_ns(), "stage": "L1_ELIGIBLE", "eligibility_reason": eligibility_reason, "status": "DELIVERED_HEADS_UP" if ok else "FAILED", "detail": detail}
                 output.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
                 output.flush()

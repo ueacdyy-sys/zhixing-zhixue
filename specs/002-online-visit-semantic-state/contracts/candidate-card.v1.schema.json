@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CandidateCardV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "card_id", "window_id", "visit_id", "source_context", "classification", "media_range", "facts", "display_excerpt", "student_action", "uncertainty", "review_status"],
+  "properties": {
+    "schema_version": {"const": "candidate_card.v1"},
+    "card_id": {"type": "string", "minLength": 1},
+    "window_id": {"type": "string", "minLength": 1},
+    "visit_id": {"type": "string", "minLength": 1},
+    "source_context": {"enum": ["PHONE_DAILY", "PC_LEARNING", "GLASSES_LEARNING"]},
+    "classification": {"const": "CANDIDATE_ONLY"},
+    "media_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_pts_ns", "end_pts_ns"],
+      "properties": {
+        "start_pts_ns": {"type": "integer", "minimum": 0},
+        "end_pts_ns": {"type": "integer", "minimum": 1}
+      }
+    },
+    "facts": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["lane", "evidence_uri", "text"],
+        "properties": {
+          "lane": {"enum": ["ASR", "OCR", "VLM"]},
+          "evidence_uri": {"type": "string", "pattern": "^local://"},
+          "text": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "display_excerpt": {"type": "string", "minLength": 1, "maxLength": 240},
+    "student_action": {"const": "OPEN_L1_CONCEPT_BRIEF"},
+    "uncertainty": {"type": "string", "minLength": 1},
+    "review_status": {"const": "auto"}
+  }
+}

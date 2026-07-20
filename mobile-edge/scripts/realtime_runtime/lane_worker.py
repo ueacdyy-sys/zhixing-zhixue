@@ -265,6 +265,26 @@ def _evidence_from_artifact(lease: JobLease, descriptor: WindowDescriptor, artif
     )
 
 
+def _record_candidate_projection_error(artifact_root: Path, error: Exception) -> None:
+    """Keep a visible projection failure without rewriting completed media evidence."""
+
+    output = artifact_root / "candidate_card_projection_errors.jsonl"
+    with exclusive_slot(output.with_suffix(output.suffix + ".lock")):
+        with output.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "event_type": "CandidateCardProjectionFailed",
+                        "pc_monotonic_ns": time.monotonic_ns(),
+                        "error_type": type(error).__name__,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+
 def run_worker(
     *, lane: Lane, ledger_path: Path, capture_root: Path, artifact_root: Path, model_dir: Path, worker_id: str, max_idle_seconds: float = 0.0
 ) -> int:
@@ -290,7 +310,18 @@ def run_worker(
                 media = materialize_window(descriptor, capture_root=capture_root, cache_root=artifact_root / "windows")
                 artifact = executor.analyze(descriptor, media, artifact_root)
                 ledger.complete(lease, _evidence_from_artifact(lease, descriptor, artifact))
-                ledger.fuse_ready(now_ns=time.monotonic_ns())
+                fused = ledger.fuse_ready(now_ns=time.monotonic_ns())
+                if fused:
+                    try:
+                        from .candidate_card_projection import project_candidate_cards
+
+                        project_candidate_cards(
+                            ledger_path=ledger_path,
+                            artifact_root=artifact_root,
+                            output_path=artifact_root / "candidate_cards.v1.json",
+                        )
+                    except Exception as projection_error:
+                        _record_candidate_projection_error(artifact_root, projection_error)
             except Exception as error:  # A lane failure must remain a visible terminal/retry state.
                 ledger.fail(lease, error_code=type(error).__name__[:80], now_ns=time.monotonic_ns(), retry_delay_ns=1_000_000_000, max_attempts=2)
 

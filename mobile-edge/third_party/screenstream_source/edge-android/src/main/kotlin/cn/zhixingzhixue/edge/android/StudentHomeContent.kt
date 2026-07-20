@@ -30,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cn.zhixingzhixue.learning.domain.CandidateCard
 import kotlinx.coroutines.launch
 
 /** Student-facing home. RTSP stays behind the explicit “devices and media” page. */
@@ -38,9 +39,8 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
     val context = LocalContext.current
     val sessionStore = remember { AndroidMobileSessionStore(context.applicationContext) }
     val session by sessionStore.current.collectAsState()
-    val candidates = remember { AndroidCandidateRepository(context.applicationContext) }
-    val candidateItems by (session?.let { active -> candidates.observe(active.id) }
-        ?: kotlinx.coroutines.flow.flowOf(emptyList())).collectAsState(initial = emptyList())
+    val candidateCards = remember { AndroidCandidateCardRepository(context.applicationContext) }
+    val cardItems by candidateCards.observe().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
 
     Box(
@@ -69,7 +69,7 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
                 sessionActive = session != null,
                 onOpen = { scope.launch { sessionStore.open() } }
             )
-            CandidatePanel(candidateItems.isEmpty(), candidateItems.firstOrNull()?.ocrExcerpt)
+            CandidatePanel(cardItems)
             DevicePanel(onOpenMediaControl)
         }
     }
@@ -105,7 +105,8 @@ private fun SessionPanel(sessionActive: Boolean, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun CandidatePanel(isEmpty: Boolean, excerpt: String?) {
+private fun CandidatePanel(cards: List<CandidateCard>) {
+    val latest = cards.lastOrNull()
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -117,7 +118,7 @@ private fun CandidatePanel(isEmpty: Boolean, excerpt: String?) {
             )
             Spacer(Modifier.weight(1f))
             Text(
-                if (isEmpty) stringResource(R.string.student_candidates_waiting) else stringResource(R.string.student_candidates_ready),
+                if (latest == null) stringResource(R.string.student_candidates_waiting) else stringResource(R.string.student_candidates_ready),
                 modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(ZhixingVisualTokens.AccentSoft).padding(horizontal = 10.dp, vertical = 5.dp),
                 color = ZhixingVisualTokens.Accent,
                 fontFamily = FontFamily.SansSerif,
@@ -126,7 +127,7 @@ private fun CandidatePanel(isEmpty: Boolean, excerpt: String?) {
         }
         Spacer(Modifier.height(12.dp))
         Text(
-            if (isEmpty) stringResource(R.string.student_candidates_empty) else excerpt.orEmpty(),
+            latest?.displayExcerpt ?: stringResource(R.string.student_candidates_empty),
             color = ZhixingVisualTokens.SecondaryInk,
             fontFamily = FontFamily.SansSerif,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
