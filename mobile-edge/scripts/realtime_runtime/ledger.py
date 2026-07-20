@@ -40,6 +40,7 @@ class SealedWindowLedger:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
+        self._backfill_fused_candidate_events()
 
     def __enter__(self) -> "SealedWindowLedger":
         return self
@@ -154,6 +155,67 @@ class SealedWindowLedger:
     @staticmethod
     def _dump_hashes(hashes: tuple[str, ...]) -> str:
         return json.dumps(list(hashes), separators=(",", ":"))
+
+    def _insert_fused_candidate_event(self, candidate: FusedCandidate) -> None:
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO fused_candidate_events(
+                window_id, visit_id, source_context, start_pts_ns, end_pts_ns,
+                evidence_uris_json, fusion_mode, fused_at_ns, classification
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate.window_id,
+                candidate.visit_id,
+                candidate.source_context.value,
+                candidate.start_pts_ns,
+                candidate.end_pts_ns,
+                json.dumps(candidate.evidence_uris, separators=(",", ":")),
+                candidate.fusion_mode.value,
+                candidate.fused_at_ns,
+                candidate.classification,
+            ),
+        )
+
+    def _backfill_fused_candidate_events(self) -> None:
+        """Upgrade old ledgers only from already verified, fully fused windows."""
+
+        windows = self._connection.execute(
+            """
+            SELECT semantic_windows.* FROM semantic_windows
+            LEFT JOIN fused_candidate_events USING(window_id)
+            WHERE semantic_windows.fused_at_ns IS NOT NULL
+              AND fused_candidate_events.window_id IS NULL
+            ORDER BY semantic_windows.start_pts_ns, semantic_windows.end_pts_ns, semantic_windows.window_id
+            """
+        ).fetchall()
+        with self._connection:
+            for window in windows:
+                required_lanes = tuple(Lane(item) for item in json.loads(window["required_lanes_json"]))
+                evidence = self._connection.execute(
+                    "SELECT * FROM lane_evidence WHERE window_id = ? ORDER BY lane", (window["window_id"],)
+                ).fetchall()
+                expected_hashes = tuple(json.loads(window["fragment_hashes_json"]))
+                if len(evidence) != len(required_lanes) or any(
+                    row["quality_status"] != QualityStatus.FUSION_ELIGIBLE.value
+                    or tuple(json.loads(row["source_fragment_hashes_json"])) != expected_hashes
+                    or row["coverage_start_pts_ns"] != window["start_pts_ns"]
+                    or row["coverage_end_pts_ns"] != window["end_pts_ns"]
+                    for row in evidence
+                ):
+                    continue
+                self._insert_fused_candidate_event(
+                    FusedCandidate(
+                        window_id=str(window["window_id"]),
+                        visit_id=str(window["visit_id"]),
+                        source_context=SourceContext(window["source_context"]),
+                        start_pts_ns=int(window["start_pts_ns"]),
+                        end_pts_ns=int(window["end_pts_ns"]),
+                        evidence_uris=tuple(str(row["artifact_uri"]) for row in evidence),
+                        fused_at_ns=int(window["fused_at_ns"]),
+                        fusion_mode=FusionMode(window["fusion_mode"]),
+                    )
+                )
 
     def append_fragment(self, fragment: SealedFragment) -> None:
         self._connection.execute(
@@ -531,25 +593,7 @@ class SealedWindowLedger:
                     (now_ns, window["window_id"]),
                 )
                 if updated.rowcount:
-                    self._connection.execute(
-                        """
-                        INSERT INTO fused_candidate_events(
-                            window_id, visit_id, source_context, start_pts_ns, end_pts_ns,
-                            evidence_uris_json, fusion_mode, fused_at_ns, classification
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            candidate.window_id,
-                            candidate.visit_id,
-                            candidate.source_context.value,
-                            candidate.start_pts_ns,
-                            candidate.end_pts_ns,
-                            json.dumps(candidate.evidence_uris, separators=(",", ":")),
-                            candidate.fusion_mode.value,
-                            candidate.fused_at_ns,
-                            candidate.classification,
-                        ),
-                    )
+                    self._insert_fused_candidate_event(candidate)
             if updated.rowcount:
                 candidates.append(candidate)
         return candidates
