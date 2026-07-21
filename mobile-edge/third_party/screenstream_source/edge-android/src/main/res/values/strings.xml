@@ -15,6 +15,10 @@
     <string name="student_candidate_save">保存</string>
     <string name="student_candidate_later">稍后</string>
     <string name="student_candidate_dismiss">关闭</string>
+    <string name="student_graph_title">兴趣与知识图谱</string>
+    <string name="student_graph_detail">PC 分析结果回传后，手机按证据、概念与学习回执整理为本地知识网络。</string>
+    <string name="student_graph_empty">暂未收到可进入图谱的 PC 分析结果。</string>
+    <string name="student_graph_profile_count">已沉淀 %1$d 条可追溯画像证据</string>
     <string name="student_devices_title">设备连接</string>
     <string name="student_devices_value">手机已就绪；PC、眼镜与手表等待学生主动连接。</string>
     <string name="student_media_control">进入媒体连接</string>

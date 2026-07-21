@@ -1,6 +1,8 @@
 package cn.zhixingzhixue.edge.android
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,7 +57,9 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
             .background(Brush.verticalGradient(listOf(ZhixingVisualTokens.CanvasTop, ZhixingVisualTokens.CanvasBottom)))
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
+            modifier = Modifier
+                .padding(horizontal = 20.dp, vertical = 24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
@@ -90,6 +94,7 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
                     }
                 },
             )
+            StudentKnowledgeGraphContent()
             DevicePanel(onOpenMediaControl)
         }
     }

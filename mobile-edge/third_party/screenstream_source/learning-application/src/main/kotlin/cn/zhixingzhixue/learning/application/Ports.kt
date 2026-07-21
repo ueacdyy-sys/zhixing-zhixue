@@ -9,6 +9,10 @@ import cn.zhixingzhixue.learning.domain.MobileSessionId
 import cn.zhixingzhixue.learning.domain.MobileLearningSession
 import cn.zhixingzhixue.learning.domain.StudentReceipt
 import cn.zhixingzhixue.learning.domain.SyncAnchor
+import cn.zhixingzhixue.learning.domain.KnowledgeGraphProjection
+import cn.zhixingzhixue.learning.domain.KnowledgeGraphSnapshot
+import cn.zhixingzhixue.learning.domain.MobileProfileUpdate
+import cn.zhixingzhixue.learning.domain.PcKnowledgeAnalysisResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import java.time.OffsetDateTime
@@ -46,6 +50,16 @@ public interface CandidateRepository {
 public interface CandidateCardRepository {
     public suspend fun upsert(card: CandidateCard)
     public fun observe(): Flow<List<CandidateCard>>
+}
+
+/**
+ * The phone's local, evidence-backed knowledge vault. PC result delivery and
+ * Android persistence are adapters; graph policy stays inside the domain.
+ */
+public interface KnowledgeGraphRepository {
+    public fun observeGraph(): Flow<KnowledgeGraphSnapshot>
+    public fun observeProfile(): Flow<List<MobileProfileUpdate>>
+    public suspend fun apply(result: PcKnowledgeAnalysisResult): KnowledgeGraphProjection
 }
 
 public interface SessionPort {
