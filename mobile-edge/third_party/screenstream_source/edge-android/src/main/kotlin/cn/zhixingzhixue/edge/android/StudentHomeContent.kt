@@ -19,8 +19,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +34,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cn.zhixingzhixue.learning.domain.CandidateCard
+import cn.zhixingzhixue.learning.domain.StudentReceipt
+import cn.zhixingzhixue.learning.domain.StudentReceiptAction
 import kotlinx.coroutines.launch
 
 /** Student-facing home. RTSP stays behind the explicit “devices and media” page. */
@@ -41,6 +46,7 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
     val session by sessionStore.current.collectAsState()
     val candidateCards = remember { AndroidCandidateCardRepository(context.applicationContext) }
     val cardItems by candidateCards.observe().collectAsState(initial = emptyList())
+    val receiptStore = remember { AndroidReceiptStore(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
     Box(
@@ -69,7 +75,21 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
                 sessionActive = session != null,
                 onOpen = { scope.launch { sessionStore.open() } }
             )
-            CandidatePanel(cardItems)
+            CandidatePanel(
+                cards = cardItems,
+                onReceipt = { card, action ->
+                    scope.launch {
+                        receiptStore.record(
+                            StudentReceipt(
+                                captureId = card.captureId,
+                                evidenceCardId = null,
+                                action = action,
+                                recordedAt = java.time.OffsetDateTime.now(),
+                            )
+                        )
+                    }
+                },
+            )
             DevicePanel(onOpenMediaControl)
         }
     }
@@ -105,8 +125,12 @@ private fun SessionPanel(sessionActive: Boolean, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun CandidatePanel(cards: List<CandidateCard>) {
+private fun CandidatePanel(
+    cards: List<CandidateCard>,
+    onReceipt: (CandidateCard, StudentReceiptAction) -> Unit,
+) {
     val latest = cards.lastOrNull()
+    var evidenceExpanded by rememberSaveable(latest?.id?.value) { mutableStateOf(false) }
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -127,13 +151,65 @@ private fun CandidatePanel(cards: List<CandidateCard>) {
         }
         Spacer(Modifier.height(12.dp))
         Text(
-            latest?.displayExcerpt ?: stringResource(R.string.student_candidates_empty),
+            latest?.displayExcerpt?.take(MAX_EXCERPT_CHARS) ?: stringResource(R.string.student_candidates_empty),
             color = ZhixingVisualTokens.SecondaryInk,
             fontFamily = FontFamily.SansSerif,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
         )
+        if (latest != null) {
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = { evidenceExpanded = !evidenceExpanded },
+                colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
+                shape = RoundedCornerShape(15.dp),
+            ) {
+                Text(
+                    stringResource(if (evidenceExpanded) R.string.student_candidate_collapse_evidence else R.string.student_candidate_view_evidence),
+                    fontFamily = FontFamily.SansSerif,
+                )
+            }
+            if (evidenceExpanded) {
+                Spacer(Modifier.height(12.dp))
+                latest.facts.forEach { fact ->
+                    Text(
+                        text = "${fact.lane.name} · ${fact.text.take(MAX_FACT_CHARS)}",
+                        color = ZhixingVisualTokens.SecondaryInk,
+                        fontFamily = FontFamily.SansSerif,
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+                Text(
+                    stringResource(R.string.student_candidate_knowledge_pending),
+                    color = ZhixingVisualTokens.SecondaryInk,
+                    fontFamily = FontFamily.SansSerif,
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { onReceipt(latest, StudentReceiptAction.SAVE) },
+                    colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Accent, contentColor = androidx.compose.ui.graphics.Color.White),
+                    shape = RoundedCornerShape(15.dp),
+                ) { Text(stringResource(R.string.student_candidate_save), fontFamily = FontFamily.SansSerif) }
+                Button(
+                    onClick = { onReceipt(latest, StudentReceiptAction.WATCH_LATER) },
+                    colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
+                    shape = RoundedCornerShape(15.dp),
+                ) { Text(stringResource(R.string.student_candidate_later), fontFamily = FontFamily.SansSerif) }
+                Button(
+                    onClick = { onReceipt(latest, StudentReceiptAction.DISMISS) },
+                    colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.SecondaryInk),
+                    shape = RoundedCornerShape(15.dp),
+                ) { Text(stringResource(R.string.student_candidate_dismiss), fontFamily = FontFamily.SansSerif) }
+            }
+        }
     }
 }
+
+private const val MAX_EXCERPT_CHARS: Int = 180
+private const val MAX_FACT_CHARS: Int = 120
 
 @Composable
 private fun DevicePanel(onOpenMediaControl: () -> Unit) {

@@ -9,6 +9,12 @@
     <string name="student_candidates_empty">暂无候选。手机媒体经 PC 本地分析与证据门控后，候选才会出现。</string>
     <string name="student_candidates_waiting">等待证据</string>
     <string name="student_candidates_ready">可查看</string>
+    <string name="student_candidate_view_evidence">查看候选证据</string>
+    <string name="student_candidate_collapse_evidence">收起候选证据</string>
+    <string name="student_candidate_knowledge_pending">尚未匹配到受控知识资源；系统不会把模型摘录伪装成概念讲解。</string>
+    <string name="student_candidate_save">保存</string>
+    <string name="student_candidate_later">稍后</string>
+    <string name="student_candidate_dismiss">关闭</string>
     <string name="student_devices_title">设备连接</string>
     <string name="student_devices_value">手机已就绪；PC、眼镜与手表等待学生主动连接。</string>
     <string name="student_media_control">进入媒体连接</string>
