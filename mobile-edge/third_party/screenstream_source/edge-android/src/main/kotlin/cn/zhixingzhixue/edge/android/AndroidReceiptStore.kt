@@ -20,6 +20,7 @@ public class AndroidReceiptStore(context: Context) : ReceiptPort {
             JSONObject()
                 .put("captureId", receipt.captureId?.value)
                 .put("evidenceCardId", receipt.evidenceCardId?.value)
+                .put("candidateCardId", receipt.candidateCardId?.value)
                 .put("action", receipt.action.name)
                 .put("recordedAt", receipt.recordedAt.toString())
         )

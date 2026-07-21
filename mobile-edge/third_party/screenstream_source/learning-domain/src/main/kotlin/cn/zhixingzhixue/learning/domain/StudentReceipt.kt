@@ -11,10 +11,14 @@ public enum class StudentReceiptAction {
 public data class StudentReceipt(
     val captureId: CaptureId?,
     val evidenceCardId: EvidenceCardId?,
+    /** Exact reference for the current phone candidate-card contract. */
+    val candidateCardId: CandidateCardId? = null,
     val action: StudentReceiptAction,
     val recordedAt: OffsetDateTime
 ) {
     init {
-        require((captureId == null) != (evidenceCardId == null)) { "exactly_one_evidence_reference_required" }
+        require(listOf(captureId, evidenceCardId, candidateCardId).count { it != null } == 1) {
+            "exactly_one_evidence_reference_required"
+        }
     }
 }

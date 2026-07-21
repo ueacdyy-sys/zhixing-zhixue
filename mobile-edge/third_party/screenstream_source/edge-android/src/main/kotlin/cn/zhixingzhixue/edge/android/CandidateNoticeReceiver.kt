@@ -32,7 +32,7 @@ public class CandidateNoticeReceiver : BroadcastReceiver() {
             raw = intent.getStringExtra(EXTRA_CANDIDATE_CARD_JSON),
             encoded = intent.getStringExtra(EXTRA_CANDIDATE_CARD_B64),
         ) ?: return
-        runBlocking { AndroidCandidateCardRepository(context.applicationContext).upsert(card) }
+        runBlocking { MobileAppServices.candidateStore(context).upsert(card) }
         val windowId = intent.getStringExtra(EXTRA_WINDOW_ID)?.takeIf { it.isNotBlank() } ?: return
         val title = intent.getStringExtra(EXTRA_TITLE)?.take(80) ?: "发现一段可回看内容"
         val message = intent.getStringExtra(EXTRA_MESSAGE)?.take(240) ?: "已形成候选证据，可自主查看。"
@@ -42,7 +42,10 @@ public class CandidateNoticeReceiver : BroadcastReceiver() {
                 description = "基于当前浏览内容的候选证据提醒"
             }
         )
-        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+            putExtra(EXTRA_CANDIDATE_CARD_ID, card.id.value)
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
         val pendingIntent = launch?.let {
             PendingIntent.getActivity(
                 context,
@@ -113,6 +116,7 @@ public class CandidateNoticeReceiver : BroadcastReceiver() {
         public const val EXTRA_MESSAGE: String = "message"
         public const val EXTRA_CANDIDATE_CARD_JSON: String = "candidate_card_json"
         public const val EXTRA_CANDIDATE_CARD_B64: String = "candidate_card_b64"
+        public const val EXTRA_CANDIDATE_CARD_ID: String = "candidate_card_id"
         private const val CHANNEL_ID: String = "student_candidate_notice_v1"
         private const val MAX_CARD_JSON_CHARS: Int = 12_000
         private const val MAX_FACT_CHARS: Int = 240

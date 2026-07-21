@@ -64,8 +64,12 @@ import info.dvkr.screenstream.ui.tabs.settings.SettingsTabContent
 import info.dvkr.screenstream.ui.tabs.stream.StreamTabContent
 
 @Composable
-internal fun ScreenStreamContent(modifier: Modifier = Modifier) {
+internal fun ScreenStreamContent(
+    initialCandidateCardId: String? = null,
+    modifier: Modifier = Modifier,
+) {
     MainContent(
+        initialCandidateCardId = initialCandidateCardId,
         modifier = modifier
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .fillMaxSize()
@@ -98,6 +102,7 @@ internal enum class AppTabs(
 
 @Composable
 private fun MainContent(
+    initialCandidateCardId: String?,
     modifier: Modifier = Modifier
 ) {
     val selectedTab = rememberSaveable { mutableStateOf(AppTabs.STREAM) }
@@ -176,6 +181,7 @@ private fun MainContent(
                 when (tab) {
                     AppTabs.STREAM -> StudentHomeContent(
                         onOpenMediaControl = { selectedTab.value = AppTabs.SETTINGS },
+                        focusCandidateCardId = initialCandidateCardId,
                         modifier = Modifier.fillMaxSize()
                     )
                     AppTabs.SETTINGS -> StreamTabContent(contentBoundsInWindow.value, modifier = Modifier.fillMaxSize())

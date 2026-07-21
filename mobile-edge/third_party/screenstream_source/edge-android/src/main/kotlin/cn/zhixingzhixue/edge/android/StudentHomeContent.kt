@@ -40,19 +40,26 @@ import androidx.compose.ui.unit.dp
 import cn.zhixingzhixue.learning.domain.CandidateCard
 import cn.zhixingzhixue.learning.domain.StudentReceipt
 import cn.zhixingzhixue.learning.domain.StudentReceiptAction
+import cn.zhixingzhixue.learning.domain.KnowledgeResourceAvailability
+import cn.zhixingzhixue.learning.domain.StudentLearningAction
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 /** Student-facing home. RTSP stays behind the explicit “devices and media” page. */
 @Composable
-public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier = Modifier) {
+public fun StudentHomeContent(
+    onOpenMediaControl: () -> Unit,
+    focusCandidateCardId: String? = null,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val sessionStore = remember { AndroidMobileSessionStore(context.applicationContext) }
     val session by sessionStore.current.collectAsState()
-    val candidateCards = remember { AndroidCandidateCardRepository(context.applicationContext) }
+    val candidateCards = remember { MobileAppServices.candidateStore(context) }
     val cardItems by candidateCards.observe().collectAsState(initial = emptyList())
-    val knowledgeVault = remember { AndroidKnowledgeGraphRepository(context.applicationContext) }
+    val knowledgeVault = remember { MobileAppServices.knowledgeVault(context) }
+    val learningPaths = remember { MobileAppServices.learningPathStore(context) }
     val receiptStore = remember { AndroidReceiptStore(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
@@ -86,12 +93,15 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
             )
             CandidatePanel(
                 cards = cardItems,
+                focusCandidateCardId = focusCandidateCardId,
+                learningPaths = learningPaths,
                 onReceipt = { card, action ->
                     scope.launch {
                         receiptStore.record(
                             StudentReceipt(
-                                captureId = card.captureId,
+                                captureId = null,
                                 evidenceCardId = null,
+                                candidateCardId = card.id,
                                 action = action,
                                 recordedAt = java.time.OffsetDateTime.now(),
                             )
@@ -137,9 +147,12 @@ private fun SessionPanel(sessionActive: Boolean, onOpen: () -> Unit) {
 @Composable
 private fun CandidatePanel(
     cards: List<CandidateCard>,
+    focusCandidateCardId: String?,
+    learningPaths: AndroidLearningPathStore,
     onReceipt: (CandidateCard, StudentReceiptAction) -> Unit,
 ) {
-    val latest = cards.lastOrNull()
+    val latest = cards.lastOrNull { it.id.value == focusCandidateCardId } ?: cards.lastOrNull()
+    val pathStates by learningPaths.observe().collectAsState()
     var evidenceExpanded by rememberSaveable(latest?.id?.value) { mutableStateOf(false) }
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -196,6 +209,14 @@ private fun CandidatePanel(
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                 )
             }
+            val stage = pathStates[latest.id.value]?.stage?.name ?: "L0_CANDIDATE"
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "当前学习阶梯：" + stage,
+                color = ZhixingVisualTokens.Accent,
+                fontFamily = FontFamily.SansSerif,
+                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+            )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
@@ -214,6 +235,18 @@ private fun CandidatePanel(
                     shape = RoundedCornerShape(15.dp),
                 ) { Text(stringResource(R.string.student_candidate_dismiss), fontFamily = FontFamily.SansSerif) }
             }
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    learningPaths.dispatch(
+                        latest,
+                        StudentLearningAction.OPEN_L1_CONCEPT_BRIEF,
+                        KnowledgeResourceAvailability.UNRESOLVED,
+                    )
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
+                shape = RoundedCornerShape(15.dp),
+            ) { Text("自主进入 L1（资源就绪后开启）", fontFamily = FontFamily.SansSerif) }
         }
     }
 }
@@ -228,9 +261,8 @@ private fun DevicePanel(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val linkStore = remember { AndroidPcDeliveryLinkStore(context.applicationContext) }
-    val inbox = remember { AndroidPcResultInbox(knowledgeVault) }
-    val deliveryClient = remember { PcDeliveryClient(linkStore, inbox) }
+    val linkStore = remember { MobileAppServices.pcLinkStore(context) }
+    val deliveryClient = remember { MobileAppServices.pcDeliveryClient(context) }
     var activeLink by remember { mutableStateOf(linkStore.read()) }
     var pcAddress by rememberSaveable { mutableStateOf(activeLink?.baseUrl ?: "") }
     var pairingCode by rememberSaveable { mutableStateOf("") }

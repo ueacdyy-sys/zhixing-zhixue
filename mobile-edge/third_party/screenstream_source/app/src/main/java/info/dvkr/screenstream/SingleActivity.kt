@@ -17,6 +17,8 @@ import info.dvkr.screenstream.common.module.StreamingModule
 import info.dvkr.screenstream.common.module.StreamingModuleManager
 import info.dvkr.screenstream.common.settings.AppSettings
 import info.dvkr.screenstream.ui.ScreenStreamContent
+import cn.zhixingzhixue.edge.android.MobileAppServices
+import cn.zhixingzhixue.edge.android.CandidateNoticeReceiver
 import info.dvkr.screenstream.ui.theme.ScreenStreamTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
@@ -48,10 +50,11 @@ public class SingleActivity : androidx.activity.ComponentActivity() {
         installSplashScreen()
         XLog.d(this@SingleActivity.getLog("onCreate", "Bug workaround: ${window.decorView}"))
         super.onCreate(savedInstanceState)
+        MobileAppServices.initialize(applicationContext)
 
         setContent {
             ScreenStreamTheme {
-                ScreenStreamContent()
+                ScreenStreamContent(intent.getStringExtra(CandidateNoticeReceiver.EXTRA_CANDIDATE_CARD_ID))
             }
         }
 
