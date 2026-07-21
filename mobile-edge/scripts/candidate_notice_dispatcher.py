@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sqlite3
 import subprocess
@@ -30,6 +31,13 @@ def _l1_eligibility(*, fusion_mode: str, is_current_visit: bool, is_fresh: bool)
     if not is_fresh:
         return False, "LIVE_EDGE_LAG_EXCEEDED"
     return True, "CURRENT_TRIMODAL_CANDIDATE"
+
+
+def _wire_card_payload(card: dict[str, object]) -> str:
+    """Encode a Unicode card as one safe adb-shell token without quote splitting."""
+
+    source = json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(source).decode("ascii")
 
 
 def _eligible_candidates(ledger_path: Path, artifact_root: Path, maximum_lag_ns: int) -> list[tuple[dict[str, object], str]]:
@@ -79,13 +87,13 @@ def _eligible_candidates(ledger_path: Path, artifact_root: Path, maximum_lag_ns:
 def _send(adb: str, serial: str, card: dict[str, object]) -> tuple[bool, str]:
     window_id = str(card["window_id"])
     message = str(card["display_excerpt"])
-    encoded_card = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+    encoded_card = _wire_card_payload(card)
     command = [
         adb, "-s", serial, "shell", "am", "broadcast", "-n", COMPONENT, "-a", ACTION,
         "--es", "window_id", window_id,
         "--es", "title", "发现一段可回看内容",
         "--es", "message", message,
-        "--es", "candidate_card_json", encoded_card,
+        "--es", "candidate_card_b64", encoded_card,
     ]
     completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
     detail = ((completed.stdout or "") + (completed.stderr or "")).strip()

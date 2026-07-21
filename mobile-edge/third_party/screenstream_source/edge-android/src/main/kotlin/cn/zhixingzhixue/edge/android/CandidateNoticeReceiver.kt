@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Base64
 import androidx.core.app.NotificationCompat
 import cn.zhixingzhixue.learning.domain.CandidateCard
 import cn.zhixingzhixue.learning.domain.CandidateCardGate
@@ -27,7 +28,10 @@ import org.json.JSONObject
 public class CandidateNoticeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_SHOW_CANDIDATE_NOTICE) return
-        candidateCard(intent.getStringExtra(EXTRA_CANDIDATE_CARD_JSON))?.let { card ->
+        candidateCard(
+            raw = intent.getStringExtra(EXTRA_CANDIDATE_CARD_JSON),
+            encoded = intent.getStringExtra(EXTRA_CANDIDATE_CARD_B64),
+        )?.let { card ->
             runBlocking { AndroidCandidateCardRepository(context.applicationContext).upsert(card) }
         }
         val windowId = intent.getStringExtra(EXTRA_WINDOW_ID)?.takeIf { it.isNotBlank() } ?: return
@@ -62,9 +66,12 @@ public class CandidateNoticeReceiver : BroadcastReceiver() {
         manager.notify(windowId.hashCode(), notification)
     }
 
-    private fun candidateCard(raw: String?): CandidateCard? = runCatching {
-        if (raw.isNullOrBlank() || raw.length > MAX_CARD_JSON_CHARS) return null
-        val document = JSONObject(raw)
+    private fun candidateCard(raw: String?, encoded: String?): CandidateCard? = runCatching {
+        val json = raw ?: encoded?.let { token ->
+            String(Base64.decode(token, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8)
+        }
+        if (json.isNullOrBlank() || json.length > MAX_CARD_JSON_CHARS) return null
+        val document = JSONObject(json)
         if (
             document.optString("schema_version") != "candidate_card.v1" ||
             document.optString("classification") != "CANDIDATE_ONLY" ||
@@ -106,6 +113,7 @@ public class CandidateNoticeReceiver : BroadcastReceiver() {
         public const val EXTRA_TITLE: String = "title"
         public const val EXTRA_MESSAGE: String = "message"
         public const val EXTRA_CANDIDATE_CARD_JSON: String = "candidate_card_json"
+        public const val EXTRA_CANDIDATE_CARD_B64: String = "candidate_card_b64"
         private const val CHANNEL_ID: String = "student_candidate_notice_v1"
         private const val MAX_CARD_JSON_CHARS: Int = 12_000
         private const val MAX_FACT_CHARS: Int = 240
