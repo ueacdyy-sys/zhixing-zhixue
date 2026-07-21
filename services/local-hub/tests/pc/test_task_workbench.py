@@ -43,7 +43,7 @@ def test_pc_task_records_its_own_phase_and_replayable_learning_behavior() -> Non
             "phase_id": "phase-pc-001",
             "session_id": "ses-pc-001",
             "source": "pc",
-            "modality": "pc_interaction",
+            "modality": "behavior",
             "event_type": "seek",
             "start_ts": "2026-07-17T19:34:00+08:00",
             "end_ts": "2026-07-17T19:34:03+08:00",

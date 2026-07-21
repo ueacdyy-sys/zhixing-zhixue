@@ -108,6 +108,8 @@ def record_pc_learning_behavior(
         raise PCTaskValidationError("session_id_must_match_active_pc_task")
     if event["source"] != "pc":
         raise PCTaskValidationError("source_must_be_pc")
+    if event["modality"] != "behavior":
+        raise PCTaskValidationError("pc_learning_behavior_modality_must_be_behavior")
     if event["event_type"] not in {
         "read",
         "seek",
@@ -130,6 +132,48 @@ def record_pc_learning_behavior(
         "phase_id": _required_text(event, "phase_id"),
         "modality": _required_text(event, "modality"),
         "event_type": _required_text(event, "event_type"),
+        "start_ts": _timezone_timestamp(event, "start_ts"),
+        "end_ts": _timezone_timestamp(event, "end_ts"),
+        "confidence": event["confidence"],
+        "quality_flags": list(event["quality_flags"]),
+        "evidence_uri": evidence_uri,
+        "privacy_level": _required_text(event, "privacy_level"),
+        "review_status": _required_text(event, "review_status"),
+        "source": "pc",
+        "learning_diagnosis": None,
+        "interest_conclusion": None,
+        "interpretation": None,
+    }
+
+
+def record_pc_environment_fact(
+    task: Mapping[str, Any], fact: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Record a Windows environment fact without mislabelling it as learning behavior."""
+    try:
+        event = validate_event(fact)
+    except EventValidationError as error:
+        raise PCTaskValidationError(str(error)) from error
+
+    task_id = _require_task_match(task, event)
+    if event["session_id"] != _required_text(task, "session_id"):
+        raise PCTaskValidationError("session_id_must_match_active_pc_task")
+    if event["source"] != "pc":
+        raise PCTaskValidationError("source_must_be_pc")
+    if event["modality"] != "behavior":
+        raise PCTaskValidationError("environment_fact_modality_must_be_behavior")
+    if event["event_type"] != "foreground_window":
+        raise PCTaskValidationError("environment_fact_type_not_allowed")
+    evidence_uri = _required_text(event, "evidence_uri")
+    if not evidence_uri.startswith("local://pc/"):
+        raise PCTaskValidationError("evidence_uri_must_use_local_pc_uri")
+    return {
+        "event_id": _required_text(event, "event_id"),
+        "session_id": _required_text(event, "session_id"),
+        "task_id": task_id,
+        "phase_id": _required_text(event, "phase_id"),
+        "modality": "behavior",
+        "event_type": "foreground_window",
         "start_ts": _timezone_timestamp(event, "start_ts"),
         "end_ts": _timezone_timestamp(event, "end_ts"),
         "confidence": event["confidence"],

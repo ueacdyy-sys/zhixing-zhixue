@@ -30,7 +30,7 @@ def pc_event(
         "task_id": "task-pc-001",
         "phase_id": "phase-pc-001",
         "source": "pc",
-        "modality": "pc_interaction",
+        "modality": "behavior",
         "event_type": event_type,
         "start_ts": start_ts,
         "end_ts": end_ts,
