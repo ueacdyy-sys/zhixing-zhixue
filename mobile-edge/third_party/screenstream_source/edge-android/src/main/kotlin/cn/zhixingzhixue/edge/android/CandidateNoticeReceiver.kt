@@ -28,12 +28,11 @@ import org.json.JSONObject
 public class CandidateNoticeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_SHOW_CANDIDATE_NOTICE) return
-        candidateCard(
+        val card = candidateCard(
             raw = intent.getStringExtra(EXTRA_CANDIDATE_CARD_JSON),
             encoded = intent.getStringExtra(EXTRA_CANDIDATE_CARD_B64),
-        )?.let { card ->
-            runBlocking { AndroidCandidateCardRepository(context.applicationContext).upsert(card) }
-        }
+        ) ?: return
+        runBlocking { AndroidCandidateCardRepository(context.applicationContext).upsert(card) }
         val windowId = intent.getStringExtra(EXTRA_WINDOW_ID)?.takeIf { it.isNotBlank() } ?: return
         val title = intent.getStringExtra(EXTRA_TITLE)?.take(80) ?: "发现一段可回看内容"
         val message = intent.getStringExtra(EXTRA_MESSAGE)?.take(240) ?: "已形成候选证据，可自主查看。"

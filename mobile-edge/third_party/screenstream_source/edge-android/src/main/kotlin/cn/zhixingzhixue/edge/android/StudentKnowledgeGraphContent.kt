@@ -9,15 +9,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cn.zhixingzhixue.learning.application.KnowledgeGraphRepository
 import cn.zhixingzhixue.learning.domain.KnowledgeGraphNode
 import cn.zhixingzhixue.learning.domain.KnowledgeGraphSnapshot
 import kotlin.math.PI
@@ -26,9 +25,10 @@ import kotlin.math.sin
 
 /** Phone-side, evidence-linked knowledge vault inspired by graph note-taking. */
 @Composable
-public fun StudentKnowledgeGraphContent(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val repository = remember { AndroidKnowledgeGraphRepository(context.applicationContext) }
+public fun StudentKnowledgeGraphContent(
+    repository: KnowledgeGraphRepository,
+    modifier: Modifier = Modifier,
+) {
     val snapshot by repository.observeGraph().collectAsState(initial = KnowledgeGraphSnapshot.empty())
     val profile by repository.observeProfile().collectAsState(initial = emptyList())
 
@@ -138,4 +138,3 @@ private fun GraphNodeRow(node: KnowledgeGraphNode) {
 }
 
 private const val MAX_VISIBLE_GRAPH_NODES: Int = 12
-

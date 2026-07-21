@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,6 +41,8 @@ import cn.zhixingzhixue.learning.domain.CandidateCard
 import cn.zhixingzhixue.learning.domain.StudentReceipt
 import cn.zhixingzhixue.learning.domain.StudentReceiptAction
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /** Student-facing home. RTSP stays behind the explicit “devices and media” page. */
 @Composable
@@ -48,6 +52,7 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
     val session by sessionStore.current.collectAsState()
     val candidateCards = remember { AndroidCandidateCardRepository(context.applicationContext) }
     val cardItems by candidateCards.observe().collectAsState(initial = emptyList())
+    val knowledgeVault = remember { AndroidKnowledgeGraphRepository(context.applicationContext) }
     val receiptStore = remember { AndroidReceiptStore(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
@@ -94,8 +99,8 @@ public fun StudentHomeContent(onOpenMediaControl: () -> Unit, modifier: Modifier
                     }
                 },
             )
-            StudentKnowledgeGraphContent()
-            DevicePanel(onOpenMediaControl)
+            StudentKnowledgeGraphContent(knowledgeVault)
+            DevicePanel(onOpenMediaControl, knowledgeVault)
         }
     }
 }
@@ -217,7 +222,28 @@ private const val MAX_EXCERPT_CHARS: Int = 180
 private const val MAX_FACT_CHARS: Int = 120
 
 @Composable
-private fun DevicePanel(onOpenMediaControl: () -> Unit) {
+private fun DevicePanel(
+    onOpenMediaControl: () -> Unit,
+    knowledgeVault: AndroidKnowledgeGraphRepository,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val linkStore = remember { AndroidPcDeliveryLinkStore(context.applicationContext) }
+    val inbox = remember { AndroidPcResultInbox(knowledgeVault) }
+    val deliveryClient = remember { PcDeliveryClient(linkStore, inbox) }
+    var activeLink by remember { mutableStateOf(linkStore.read()) }
+    var pcAddress by rememberSaveable { mutableStateOf(activeLink?.baseUrl ?: "") }
+    var pairingCode by rememberSaveable { mutableStateOf("") }
+    var syncMessage by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(activeLink?.deviceId) {
+        while (isActive && activeLink != null) {
+            runCatching { deliveryClient.synchronizeOnce() }
+                .onSuccess { count -> if (count > 0) syncMessage = "已同步 " + count + " 条 PC 分析结果" }
+                .onFailure { syncMessage = "PC 同步等待重试" }
+            delay(5_000)
+        }
+    }
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Text(
             stringResource(R.string.student_devices_title),
@@ -228,11 +254,63 @@ private fun DevicePanel(onOpenMediaControl: () -> Unit) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            stringResource(R.string.student_devices_value),
+            if (activeLink == null) stringResource(R.string.student_devices_value) else stringResource(R.string.student_devices_paired),
             color = ZhixingVisualTokens.SecondaryInk,
             fontFamily = FontFamily.SansSerif,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
         )
+        if (activeLink == null) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = pcAddress,
+                onValueChange = { pcAddress = it },
+                label = { Text(stringResource(R.string.student_pair_pc_address)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = pairingCode,
+                onValueChange = { pairingCode = it },
+                label = { Text(stringResource(R.string.student_pair_code)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = {
+                    scope.launch {
+                        runCatching { deliveryClient.pair(pcAddress, pairingCode) }
+                            .onSuccess {
+                                activeLink = it
+                                pairingCode = ""
+                                syncMessage = "PC 已配对，正在接收分析结果"
+                            }
+                            .onFailure { syncMessage = "配对失败，请检查地址与配对码" }
+                    }
+                },
+                enabled = pcAddress.isNotBlank() && pairingCode.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Accent, contentColor = androidx.compose.ui.graphics.Color.White),
+                shape = RoundedCornerShape(15.dp),
+            ) { Text(stringResource(R.string.student_pair_pc), fontFamily = FontFamily.SansSerif) }
+        } else {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                syncMessage.ifBlank { stringResource(R.string.student_sync_waiting) },
+                color = ZhixingVisualTokens.SecondaryInk,
+                fontFamily = FontFamily.SansSerif,
+                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+            )
+            Button(
+                onClick = {
+                    linkStore.clear()
+                    activeLink = null
+                    syncMessage = ""
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.SecondaryInk),
+                shape = RoundedCornerShape(15.dp),
+            ) { Text(stringResource(R.string.student_unpair_pc), fontFamily = FontFamily.SansSerif) }
+        }
         Spacer(Modifier.height(16.dp))
         Button(
             onClick = onOpenMediaControl,

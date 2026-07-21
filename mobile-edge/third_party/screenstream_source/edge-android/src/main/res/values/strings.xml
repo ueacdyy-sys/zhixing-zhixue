@@ -21,5 +21,11 @@
     <string name="student_graph_profile_count">已沉淀 %1$d 条可追溯画像证据</string>
     <string name="student_devices_title">设备连接</string>
     <string name="student_devices_value">手机已就绪；PC、眼镜与手表等待学生主动连接。</string>
+    <string name="student_devices_paired">已与本地 PC 配对，手机会自动拉取并确认 PC 的分析结果。</string>
+    <string name="student_pair_pc_address">PC 局域网地址（例如 http://192.168.x.x:8777）</string>
+    <string name="student_pair_code">PC 配对码</string>
+    <string name="student_pair_pc">配对 PC</string>
+    <string name="student_unpair_pc">解除 PC 配对</string>
+    <string name="student_sync_waiting">已配对，等待 PC 分析结果。</string>
     <string name="student_media_control">进入媒体连接</string>
 </resources>

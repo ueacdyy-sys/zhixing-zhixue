@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 /** Explicit student-controlled local-LAN pairing configuration. */
 public data class PcDeliveryLink(
@@ -46,6 +47,17 @@ public class AndroidPcDeliveryLinkStore(context: Context) {
         preferences.edit().putString(CURSOR, cursor).apply()
     }
 
+    public fun localDeviceId(): String {
+        preferences.getString(DEVICE_ID, null)?.takeIf { it.isNotBlank() }?.let { return it }
+        return ("android-" + UUID.randomUUID()).also { deviceId ->
+            preferences.edit().putString(DEVICE_ID, deviceId).apply()
+        }
+    }
+
+    public fun clear() {
+        preferences.edit().clear().apply()
+    }
+
     private companion object {
         private const val PREFERENCES: String = "zhixing_pc_delivery_link"
         private const val BASE_URL: String = "base_url"
@@ -63,6 +75,27 @@ public class PcDeliveryClient(
     private val linkStore: AndroidPcDeliveryLinkStore,
     private val inbox: AndroidPcResultInbox,
 ) {
+    public suspend fun pair(baseUrl: String, pairingToken: String): PcDeliveryLink = withContext(Dispatchers.IO) {
+        val normalizedBaseUrl = baseUrl.trim().removeSuffix("/")
+        val deviceId = linkStore.localDeviceId()
+        val response = anonymousRequest(
+            normalizedBaseUrl + "/api/mobile-outbox/devices/pair",
+            JSONObject()
+                .put("device_id", deviceId)
+                .put("pairing_token", pairingToken.trim())
+                .toString(),
+        )
+        val document = JSONObject(response)
+        val link = PcDeliveryLink(
+            baseUrl = normalizedBaseUrl,
+            deviceId = document.getString("device_id"),
+            pairingToken = document.getString("access_token"),
+            cursor = null,
+        )
+        linkStore.save(link)
+        link
+    }
+
     public suspend fun synchronizeOnce(): Int = withContext(Dispatchers.IO) {
         val link = linkStore.read() ?: return@withContext 0
         val endpoint = link.baseUrl + "/api/mobile-outbox/messages?device_id=" +
@@ -112,6 +145,26 @@ public class PcDeliveryClient(
             val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
             val response = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             require(connection.responseCode in 200..299) { "pc_delivery_http_" + connection.responseCode }
+            return response
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun anonymousRequest(url: String, body: String): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = TIMEOUT_MS
+            readTimeout = TIMEOUT_MS
+            doOutput = true
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        }
+        try {
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
+            val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+            val response = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            require(connection.responseCode in 200..299) { "pc_pairing_http_" + connection.responseCode }
             return response
         } finally {
             connection.disconnect()
