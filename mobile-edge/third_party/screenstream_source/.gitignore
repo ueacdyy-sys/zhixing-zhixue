@@ -39,4 +39,7 @@ captures/
 .idea
 
 .kotlin/
-keys/*.jks
+# Never commit signing material. Debug keys may exist locally for development;
+# release signing is supplied by the secure build environment.
+*.jks
+*.keystore

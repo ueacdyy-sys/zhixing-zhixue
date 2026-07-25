@@ -17,9 +17,9 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,19 +38,19 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cn.zhixingzhixue.learning.domain.CandidateCard
+import cn.zhixingzhixue.learning.domain.CandidateMediaSource
 import cn.zhixingzhixue.learning.domain.StudentReceipt
 import cn.zhixingzhixue.learning.domain.StudentReceiptAction
 import cn.zhixingzhixue.learning.domain.KnowledgeResourceAvailability
 import cn.zhixingzhixue.learning.domain.StudentLearningAction
+import cn.zhixingzhixue.learning.domain.AgentContextReference
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 
 /** Student-facing home. RTSP stays behind the explicit “devices and media” page. */
 @Composable
 public fun StudentHomeContent(
-    onOpenMediaControl: () -> Unit,
     focusCandidateCardId: String? = null,
+    onAskAgent: (List<AgentContextReference>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -58,10 +58,11 @@ public fun StudentHomeContent(
     val session by sessionStore.current.collectAsState()
     val candidateCards = remember { MobileAppServices.candidateStore(context) }
     val cardItems by candidateCards.observe().collectAsState(initial = emptyList())
-    val knowledgeVault = remember { MobileAppServices.knowledgeVault(context) }
     val learningPaths = remember { MobileAppServices.learningPathStore(context) }
+    val learningContent = remember { MobileAppServices.learningContentStore(context) }
     val receiptStore = remember { AndroidReceiptStore(context.applicationContext) }
     val scope = rememberCoroutineScope()
+    var selectedSource by rememberSaveable { mutableStateOf(CandidateMediaSource.PHONE_SCREEN) }
 
     Box(
         modifier = modifier
@@ -70,29 +71,30 @@ public fun StudentHomeContent(
     ) {
         Column(
             modifier = Modifier
-                .padding(horizontal = 20.dp, vertical = 24.dp)
+                .padding(start = 20.dp, end = 20.dp, top = 62.dp, bottom = 24.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
                 stringResource(R.string.student_home_title),
                 color = ZhixingVisualTokens.Ink,
-                fontFamily = FontFamily.SansSerif,
+                fontFamily = V5Typography.Family,
                 fontWeight = FontWeight.SemiBold,
                 style = androidx.compose.material3.MaterialTheme.typography.headlineLarge
             )
             Text(
                 stringResource(R.string.student_home_subtitle),
                 color = ZhixingVisualTokens.SecondaryInk,
-                fontFamily = FontFamily.SansSerif,
+                fontFamily = V5Typography.Family,
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
             )
             SessionPanel(
                 sessionActive = session != null,
                 onOpen = { scope.launch { sessionStore.open() } }
             )
+            SourceSelector(selectedSource = selectedSource, onSelect = { selectedSource = it })
             CandidatePanel(
-                cards = cardItems,
+                cards = cardItems.filter { it.source == selectedSource },
                 focusCandidateCardId = focusCandidateCardId,
                 learningPaths = learningPaths,
                 onReceipt = { card, action ->
@@ -108,11 +110,36 @@ public fun StudentHomeContent(
                         )
                     }
                 },
+                onAskAgent = { cards ->
+                    onAskAgent(cards.map { card -> card.toAgentContextReference() })
+                },
             )
-            StudentKnowledgeGraphContent(knowledgeVault)
-            DevicePanel(onOpenMediaControl, knowledgeVault)
+            StudentLearningContent(learningContent, learningPaths, selectedSource)
         }
     }
+}
+
+@Composable
+private fun SourceSelector(
+    selectedSource: CandidateMediaSource,
+    onSelect: (CandidateMediaSource) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SourceButton("手机屏幕流", selectedSource == CandidateMediaSource.PHONE_SCREEN) { onSelect(CandidateMediaSource.PHONE_SCREEN) }
+        SourceButton("眼镜第一视角", selectedSource == CandidateMediaSource.GLASSES_FIRST_PERSON) { onSelect(CandidateMediaSource.GLASSES_FIRST_PERSON) }
+    }
+}
+
+@Composable
+private fun SourceButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (selected) ZhixingVisualTokens.Accent else ZhixingVisualTokens.Quiet,
+            contentColor = if (selected) androidx.compose.ui.graphics.Color.White else ZhixingVisualTokens.Accent,
+        ),
+        shape = RoundedCornerShape(15.dp),
+    ) { Text(label, fontFamily = V5Typography.Family) }
 }
 
 @Composable
@@ -121,7 +148,7 @@ private fun SessionPanel(sessionActive: Boolean, onOpen: () -> Unit) {
         Text(
             if (sessionActive) stringResource(R.string.student_session_active) else stringResource(R.string.student_session_open),
             color = ZhixingVisualTokens.Ink,
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = V5Typography.Family,
             fontWeight = FontWeight.Medium,
             style = androidx.compose.material3.MaterialTheme.typography.titleLarge
         )
@@ -129,7 +156,7 @@ private fun SessionPanel(sessionActive: Boolean, onOpen: () -> Unit) {
         Text(
             stringResource(if (sessionActive) R.string.student_session_active_detail else R.string.student_session_open_detail),
             color = ZhixingVisualTokens.SecondaryInk,
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = V5Typography.Family,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
         )
         if (!sessionActive) {
@@ -139,7 +166,7 @@ private fun SessionPanel(sessionActive: Boolean, onOpen: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Accent, contentColor = androidx.compose.ui.graphics.Color.White),
                 shape = RoundedCornerShape(15.dp),
                 contentPadding = ButtonDefaults.ContentPadding
-            ) { Text(stringResource(R.string.student_session_open), fontFamily = FontFamily.SansSerif) }
+            ) { Text(stringResource(R.string.student_session_open), fontFamily = V5Typography.Family) }
         }
     }
 }
@@ -150,16 +177,19 @@ private fun CandidatePanel(
     focusCandidateCardId: String?,
     learningPaths: AndroidLearningPathStore,
     onReceipt: (CandidateCard, StudentReceiptAction) -> Unit,
+    onAskAgent: (List<CandidateCard>) -> Unit,
 ) {
     val latest = cards.lastOrNull { it.id.value == focusCandidateCardId } ?: cards.lastOrNull()
     val pathStates by learningPaths.observe().collectAsState()
     var evidenceExpanded by rememberSaveable(latest?.id?.value) { mutableStateOf(false) }
+    var selectionMode by rememberSaveable { mutableStateOf(false) }
+    var selectedForAgent by rememberSaveable { mutableStateOf(emptySet<String>()) }
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 stringResource(R.string.student_candidates_title),
                 color = ZhixingVisualTokens.Ink,
-                fontFamily = FontFamily.SansSerif,
+                fontFamily = V5Typography.Family,
                 fontWeight = FontWeight.Medium,
                 style = androidx.compose.material3.MaterialTheme.typography.titleMedium
             )
@@ -168,7 +198,7 @@ private fun CandidatePanel(
                 if (latest == null) stringResource(R.string.student_candidates_waiting) else stringResource(R.string.student_candidates_ready),
                 modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(ZhixingVisualTokens.AccentSoft).padding(horizontal = 10.dp, vertical = 5.dp),
                 color = ZhixingVisualTokens.Accent,
-                fontFamily = FontFamily.SansSerif,
+                fontFamily = V5Typography.Family,
                 style = androidx.compose.material3.MaterialTheme.typography.labelMedium
             )
         }
@@ -176,7 +206,7 @@ private fun CandidatePanel(
         Text(
             latest?.displayExcerpt?.take(MAX_EXCERPT_CHARS) ?: stringResource(R.string.student_candidates_empty),
             color = ZhixingVisualTokens.SecondaryInk,
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = V5Typography.Family,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
         )
         if (latest != null) {
@@ -188,7 +218,7 @@ private fun CandidatePanel(
             ) {
                 Text(
                     stringResource(if (evidenceExpanded) R.string.student_candidate_collapse_evidence else R.string.student_candidate_view_evidence),
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = V5Typography.Family,
                 )
             }
             if (evidenceExpanded) {
@@ -197,7 +227,7 @@ private fun CandidatePanel(
                     Text(
                         text = "${fact.lane.name} · ${fact.text.take(MAX_FACT_CHARS)}",
                         color = ZhixingVisualTokens.SecondaryInk,
-                        fontFamily = FontFamily.SansSerif,
+                        fontFamily = V5Typography.Family,
                         style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(6.dp))
@@ -205,7 +235,7 @@ private fun CandidatePanel(
                 Text(
                     stringResource(R.string.student_candidate_knowledge_pending),
                     color = ZhixingVisualTokens.SecondaryInk,
-                    fontFamily = FontFamily.SansSerif,
+                    fontFamily = V5Typography.Family,
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                 )
             }
@@ -214,7 +244,7 @@ private fun CandidatePanel(
             Text(
                 text = "当前学习阶梯：" + stage,
                 color = ZhixingVisualTokens.Accent,
-                fontFamily = FontFamily.SansSerif,
+                fontFamily = V5Typography.Family,
                 style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
             )
             Spacer(Modifier.height(8.dp))
@@ -223,41 +253,93 @@ private fun CandidatePanel(
                     onClick = { onReceipt(latest, StudentReceiptAction.SAVE) },
                     colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Accent, contentColor = androidx.compose.ui.graphics.Color.White),
                     shape = RoundedCornerShape(15.dp),
-                ) { Text(stringResource(R.string.student_candidate_save), fontFamily = FontFamily.SansSerif) }
+                ) { Text(stringResource(R.string.student_candidate_save), fontFamily = V5Typography.Family) }
                 Button(
                     onClick = { onReceipt(latest, StudentReceiptAction.WATCH_LATER) },
                     colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
                     shape = RoundedCornerShape(15.dp),
-                ) { Text(stringResource(R.string.student_candidate_later), fontFamily = FontFamily.SansSerif) }
+                ) { Text(stringResource(R.string.student_candidate_later), fontFamily = V5Typography.Family) }
                 Button(
                     onClick = { onReceipt(latest, StudentReceiptAction.DISMISS) },
                     colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.SecondaryInk),
                     shape = RoundedCornerShape(15.dp),
-                ) { Text(stringResource(R.string.student_candidate_dismiss), fontFamily = FontFamily.SansSerif) }
+                ) { Text(stringResource(R.string.student_candidate_dismiss), fontFamily = V5Typography.Family) }
             }
             Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    learningPaths.dispatch(
-                        latest,
-                        StudentLearningAction.OPEN_L1_CONCEPT_BRIEF,
-                        KnowledgeResourceAvailability.UNRESOLVED,
-                    )
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
-                shape = RoundedCornerShape(15.dp),
-            ) { Text("自主进入 L1（资源就绪后开启）", fontFamily = FontFamily.SansSerif) }
+            if (latest.isL1Eligible) {
+                Button(
+                    onClick = {
+                        learningPaths.dispatch(
+                            latest,
+                            StudentLearningAction.OPEN_L1_CONCEPT_BRIEF,
+                            KnowledgeResourceAvailability.UNRESOLVED,
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
+                    shape = RoundedCornerShape(15.dp),
+                ) { Text("自主进入 L1（资源就绪后开启）", fontFamily = V5Typography.Family) }
+            } else {
+                Text("该第一视角片段已封存，待回家后对齐完整证据再开放学习入口。", color = ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family)
+            }
+            Spacer(Modifier.height(10.dp))
+            if (!selectionMode) {
+                Button(
+                    onClick = { selectionMode = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
+                    shape = RoundedCornerShape(15.dp),
+                ) { Text("选择会话问智能体", fontFamily = V5Typography.Family) }
+            } else {
+                Text("选择后仅转交会话摘要与证据引用；不会改变 L0–L4。", color = ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family)
+                cards.takeLast(12).reversed().forEach { card ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = card.id.value in selectedForAgent,
+                            onCheckedChange = { checked ->
+                                selectedForAgent = if (checked) selectedForAgent + card.id.value else selectedForAgent - card.id.value
+                            },
+                        )
+                        Text(card.displayExcerpt.take(72), color = ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family)
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            selectionMode = false
+                            selectedForAgent = emptySet()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.SecondaryInk),
+                    ) { Text("取消", fontFamily = V5Typography.Family) }
+                    Button(
+                        onClick = {
+                            onAskAgent(cards.filter { it.id.value in selectedForAgent })
+                            selectionMode = false
+                            selectedForAgent = emptySet()
+                        },
+                        enabled = selectedForAgent.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Accent, contentColor = androidx.compose.ui.graphics.Color.White),
+                    ) { Text("问智能体", fontFamily = V5Typography.Family) }
+                }
+            }
         }
     }
 }
+
+private fun CandidateCard.toAgentContextReference(): AgentContextReference = AgentContextReference(
+    id = id.value,
+    title = if (source == CandidateMediaSource.PHONE_SCREEN) "手机屏幕流会话" else "眼镜第一视角会话",
+    summary = displayExcerpt,
+    source = source,
+    visitId = visitId,
+    evidenceRefs = evidenceRefs,
+)
 
 private const val MAX_EXCERPT_CHARS: Int = 180
 private const val MAX_FACT_CHARS: Int = 120
 
 @Composable
-private fun DevicePanel(
+public fun StudentConnectionContent(
     onOpenMediaControl: () -> Unit,
-    knowledgeVault: AndroidKnowledgeGraphRepository,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -268,19 +350,21 @@ private fun DevicePanel(
     var pairingCode by rememberSaveable { mutableStateOf("") }
     var syncMessage by rememberSaveable { mutableStateOf("") }
 
-    LaunchedEffect(activeLink?.deviceId) {
-        while (isActive && activeLink != null) {
-            runCatching { deliveryClient.synchronizeOnce() }
-                .onSuccess { count -> if (count > 0) syncMessage = "已同步 " + count + " 条 PC 分析结果" }
-                .onFailure { syncMessage = "PC 同步等待重试" }
-            delay(5_000)
-        }
-    }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(ZhixingVisualTokens.CanvasTop, ZhixingVisualTokens.CanvasBottom)))
+            .verticalScroll(rememberScrollState())
+            .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("连接", color = ZhixingVisualTokens.Ink, fontFamily = V5Typography.Family, fontWeight = FontWeight.SemiBold, style = androidx.compose.material3.MaterialTheme.typography.headlineLarge)
+        Text("管理手机、PC 与后续可接入设备的数据边界。", color = ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family)
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Text(
             stringResource(R.string.student_devices_title),
             color = ZhixingVisualTokens.Ink,
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = V5Typography.Family,
             fontWeight = FontWeight.Medium,
             style = androidx.compose.material3.MaterialTheme.typography.titleMedium
         )
@@ -288,7 +372,7 @@ private fun DevicePanel(
         Text(
             if (activeLink == null) stringResource(R.string.student_devices_value) else stringResource(R.string.student_devices_paired),
             color = ZhixingVisualTokens.SecondaryInk,
-            fontFamily = FontFamily.SansSerif,
+            fontFamily = V5Typography.Family,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
         )
         if (activeLink == null) {
@@ -315,8 +399,9 @@ private fun DevicePanel(
                         runCatching { deliveryClient.pair(pcAddress, pairingCode) }
                             .onSuccess {
                                 activeLink = it
+                                PcSyncForegroundService.start(context)
                                 pairingCode = ""
-                                syncMessage = "PC 已配对，正在接收分析结果"
+                                syncMessage = "PC 已配对，后台同步已开启"
                             }
                             .onFailure { syncMessage = "配对失败，请检查地址与配对码" }
                     }
@@ -324,24 +409,27 @@ private fun DevicePanel(
                 enabled = pcAddress.isNotBlank() && pairingCode.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Accent, contentColor = androidx.compose.ui.graphics.Color.White),
                 shape = RoundedCornerShape(15.dp),
-            ) { Text(stringResource(R.string.student_pair_pc), fontFamily = FontFamily.SansSerif) }
+            ) { Text(stringResource(R.string.student_pair_pc), fontFamily = V5Typography.Family) }
         } else {
             Spacer(Modifier.height(10.dp))
             Text(
                 syncMessage.ifBlank { stringResource(R.string.student_sync_waiting) },
                 color = ZhixingVisualTokens.SecondaryInk,
-                fontFamily = FontFamily.SansSerif,
+                fontFamily = V5Typography.Family,
                 style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
             )
             Button(
                 onClick = {
-                    linkStore.clear()
-                    activeLink = null
-                    syncMessage = ""
+                    scope.launch {
+                        PcSyncForegroundService.stop(context)
+                        deliveryClient.unpair()
+                        activeLink = null
+                        syncMessage = ""
+                    }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.SecondaryInk),
                 shape = RoundedCornerShape(15.dp),
-            ) { Text(stringResource(R.string.student_unpair_pc), fontFamily = FontFamily.SansSerif) }
+            ) { Text(stringResource(R.string.student_unpair_pc), fontFamily = V5Typography.Family) }
         }
         Spacer(Modifier.height(16.dp))
         Button(
@@ -349,6 +437,27 @@ private fun DevicePanel(
             modifier = Modifier.wrapContentWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = ZhixingVisualTokens.Quiet, contentColor = ZhixingVisualTokens.Accent),
             shape = RoundedCornerShape(15.dp)
-        ) { Text(stringResource(R.string.student_media_control), fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium) }
+        ) { Text(stringResource(R.string.student_media_control), fontFamily = V5Typography.Family, fontWeight = FontWeight.Medium) }
+    }
+        GlassPanel(modifier = Modifier.fillMaxWidth()) {
+            Text("外出设备链", color = ZhixingVisualTokens.Ink, fontFamily = V5Typography.Family, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(7.dp))
+            DeviceTransportRow("手机", "当前应用", "本地保存候选卡、学习回应、知识图谱与设备时间轴")
+            DeviceTransportRow("眼镜", "尚未接入", "BLE 用于控制与低频状态；高带宽第一视角视频后续通过 Wi-Fi Direct 存入手机")
+            DeviceTransportRow("手表", "尚未接入", "BLE 同步状态流至手机；手机再与 PC 对齐，不要求手表靠近 PC")
+            Spacer(Modifier.height(4.dp))
+            Text("未接入设备不会伪造为已连接；当前 PC 配对只同步明确允许同步的候选、学习内容和图谱事件。", color = ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun DeviceTransportRow(name: String, status: String, detail: String) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(name, color = ZhixingVisualTokens.Ink, fontFamily = V5Typography.Family, fontWeight = FontWeight.Medium)
+            Text(status, color = if (status == "当前应用") ZhixingVisualTokens.Accent else ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family)
+        }
+        Text(detail, color = ZhixingVisualTokens.SecondaryInk, fontFamily = V5Typography.Family, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
     }
 }

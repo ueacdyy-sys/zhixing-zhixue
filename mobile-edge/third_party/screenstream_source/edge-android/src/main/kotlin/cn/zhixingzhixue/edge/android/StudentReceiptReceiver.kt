@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import cn.zhixingzhixue.learning.domain.CaptureId
+import cn.zhixingzhixue.learning.domain.EvidenceCardId
 import cn.zhixingzhixue.learning.domain.StudentReceipt
 import cn.zhixingzhixue.learning.domain.StudentReceiptAction
 import java.time.OffsetDateTime
@@ -16,10 +17,11 @@ public class StudentReceiptReceiver : BroadcastReceiver() {
         val action = intent.getStringExtra(EXTRA_ACTION)?.let { value ->
             runCatching { StudentReceiptAction.valueOf(value) }.getOrNull()
         } ?: return
+        val candidateCardId = intent.getStringExtra(EXTRA_CANDIDATE_CARD_ID)?.takeIf { it.isNotBlank() }
         AndroidReceiptStore(context).append(
             StudentReceipt(
                 captureId = CaptureId(captureId),
-                evidenceCardId = null,
+                evidenceCardId = candidateCardId?.let(::EvidenceCardId),
                 action = action,
                 recordedAt = OffsetDateTime.now()
             )
@@ -29,6 +31,7 @@ public class StudentReceiptReceiver : BroadcastReceiver() {
     public companion object {
         public const val ACTION_RECORD_RECEIPT: String = "cn.zhixingzhixue.edge.action.RECORD_RECEIPT"
         public const val EXTRA_CAPTURE_ID: String = "capture_id"
+        public const val EXTRA_CANDIDATE_CARD_ID: String = "candidate_card_id"
         public const val EXTRA_ACTION: String = "receipt_action"
     }
 }

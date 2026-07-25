@@ -8,6 +8,7 @@ import cn.zhixingzhixue.learning.domain.CandidateCardGate
 import cn.zhixingzhixue.learning.domain.CandidateCardId
 import cn.zhixingzhixue.learning.domain.CandidateEvidenceFact
 import cn.zhixingzhixue.learning.domain.CandidateEvidenceLane
+import cn.zhixingzhixue.learning.domain.CandidateMediaSource
 import cn.zhixingzhixue.learning.domain.CaptureId
 import cn.zhixingzhixue.learning.domain.LocalEvidenceRef
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,9 @@ public class AndroidCandidateCardRepository(context: Context) : CandidateCardRep
 
     override fun observe(): Flow<List<CandidateCard>> = cards
 
+    /** Snapshot for an explicit user-initiated local export. */
+    public fun snapshot(): List<CandidateCard> = cards.value
+
     private fun readAll(): List<CandidateCard> = runCatching {
         decode(JSONArray(preferences.getString(CARDS, "[]")))
     }.getOrDefault(emptyList())
@@ -46,6 +50,7 @@ public class AndroidCandidateCardRepository(context: Context) : CandidateCardRep
                     .put("displayExcerpt", card.displayExcerpt)
                     .put("classification", card.classification.name)
                     .put("isL1Eligible", card.isL1Eligible)
+                    .put("source", card.source.name)
             )
         }
     }
@@ -72,8 +77,11 @@ public class AndroidCandidateCardRepository(context: Context) : CandidateCardRep
                 evidenceRefs = refs,
                 facts = facts,
                 displayExcerpt = item.getString("displayExcerpt"),
+                source = item.optString("source", CandidateMediaSource.PHONE_SCREEN.name)
+                    .let { CandidateMediaSource.valueOf(it) },
+                isL1Eligible = item.optBoolean("isL1Eligible", false),
             )
-            if (item.getString("classification") == CandidateCardClassification.CANDIDATE_ONLY.name && item.getBoolean("isL1Eligible") && card != null) {
+            if (item.getString("classification") == CandidateCardClassification.CANDIDATE_ONLY.name && card != null) {
                 add(card)
             }
         }

@@ -40,3 +40,11 @@ mobile-edge/third_party/screenstream_source/build/
 mobile-edge/third_party/screenstream_source/local.properties
 mobile-edge/third_party/screenstream_source/keys/
 services/local-hub/_previous-attempts/
+
+# 可再生 UI 审查制品与临时动作索引；保留 HTML 原型源文件。
+build-v5-action-index.tmp
+design/mobile-ui-prototype-v5/_qa_*.png
+design/mobile-ui-prototype-v5/preview-*.png
+design/native-ui-audit/
+mobile-edge/docs/zhixing-*.png
+mobile-edge/docs/zhixing-*.xml

@@ -62,7 +62,7 @@ class CandidateCardTests(unittest.TestCase):
         self.assertEqual("window-1", card["window_id"])
         self.assertEqual(["ASR", "OCR", "VLM"], [fact["lane"] for fact in card["facts"]])
         self.assertIn("两万个角色", card["display_excerpt"])
-        self.assertEqual("OPEN_L1_CONCEPT_BRIEF", card["student_action"])
+        self.assertEqual("VIEW_EVIDENCE", card["student_action"])
         self.assertIn("不构成兴趣、能力或专注结论", card["uncertainty"])
 
     def test_rejects_missing_lane_or_cross_window_artifact(self) -> None:

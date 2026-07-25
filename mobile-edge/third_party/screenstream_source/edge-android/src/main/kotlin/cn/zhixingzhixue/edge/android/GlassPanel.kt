@@ -17,10 +17,10 @@ import androidx.compose.ui.unit.dp
 internal fun GlassPanel(
     modifier: Modifier = Modifier,
     elevation: Dp = 0.dp,
-    contentPadding: PaddingValues = PaddingValues(20.dp),
+    contentPadding: PaddingValues = PaddingValues(14.dp),
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val shape = RoundedCornerShape(26.dp)
+    val shape = RoundedCornerShape(14.dp)
     Surface(
         modifier = modifier.shadow(elevation, shape, clip = false),
         shape = shape,

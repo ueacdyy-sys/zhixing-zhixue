@@ -24,8 +24,8 @@ android {
         applicationId = "cn.zhixingzhixue.mobile"
         minSdk = rootProject.extra["minSdkVersion"] as Int
         targetSdk = rootProject.extra["targetSdkVersion"] as Int
-        versionCode = 10007
-        versionName = "1.0.0-edge.6-keyframe-clockmarker"
+        versionCode = 10008
+        versionName = "1.1.0-paired-pc-reliable-sync"
 
         ndk.abiFilters.addAll(listOf("armeabi-v7a", "x86", "arm64-v8a", "x86_64"))
     }

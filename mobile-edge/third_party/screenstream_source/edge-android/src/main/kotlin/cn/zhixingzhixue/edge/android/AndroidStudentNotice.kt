@@ -5,36 +5,62 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
+import androidx.core.graphics.drawable.IconCompat
+import cn.zhixingzhixue.edge.android.R
 import cn.zhixingzhixue.learning.application.CandidateNotice
 import cn.zhixingzhixue.learning.application.StudentNotificationPort
 import cn.zhixingzhixue.learning.domain.StudentReceiptAction
 
 /**
- * High-importance notification channel for voluntary student review. This asks
- * Android for a heads-up banner; the user's notification settings decide whether
- * it is displayed. The notification never contains an interest/knowledge verdict.
+ * High-importance Android conversation notification for a PC-prepared L1
+ * concept brief. This asks Android for a heads-up banner; the user's
+ * notification settings decide whether it is displayed. L0 stays only as
+ * candidate evidence inside the app and never posts a heads-up notification.
  */
 public class AndroidStudentNotice(private val context: Context) : StudentNotificationPort {
     override suspend fun show(notice: CandidateNotice) {
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "知行智学学习提醒", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "学生自主查看候选证据与选择回执"
-            }
-        )
+        val manager = ensureChannel()
+        val assistant = Person.Builder()
+            .setName(SENDER_NAME)
+            .setBot(true)
+            .setIcon(IconCompat.createWithResource(context, R.drawable.ic_zhixing_message_24dp))
+            .build()
+        val messageStyle = NotificationCompat.MessagingStyle(assistant)
+            .setConversationTitle(CONVERSATION_TITLE)
+            .setGroupConversation(false)
+            .addMessage(notice.message, System.currentTimeMillis(), assistant)
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
         builder
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(notice.title)
+            .setSmallIcon(R.drawable.ic_zhixing_message_24dp)
             .setContentText(notice.message)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(notice.message))
+            .setStyle(messageStyle)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .addAction(action(notice, "保存", StudentReceiptAction.SAVE, 1))
-            .addAction(action(notice, "稍后查看", StudentReceiptAction.WATCH_LATER, 2))
-            .addAction(action(notice, "关闭", StudentReceiptAction.DISMISS, 3))
-        manager.notify(notice.notificationId, builder.build())
+            .setContentIntent(openCandidate(notice))
+            .addAction(action(notice, "稍后查看", StudentReceiptAction.WATCH_LATER, 1))
+        manager.notify(NOTIFICATION_TAG, notice.notificationId, builder.build())
+    }
+
+    /**
+     * Registers the L1 learning-message channel without posting a notification.
+     * This keeps the in-app system-notification settings link valid before the
+     * first evidence message arrives.
+     */
+    public fun ensureChannel(): NotificationManager {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "学习消息", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "L1 概念小结到达时的系统消息通知"
+                    enableVibration(true)
+                }
+            )
+        }
+        return manager
     }
 
     private fun action(
@@ -46,6 +72,7 @@ public class AndroidStudentNotice(private val context: Context) : StudentNotific
         val intent = Intent(context, StudentReceiptReceiver::class.java)
             .setAction(StudentReceiptReceiver.ACTION_RECORD_RECEIPT)
             .putExtra(StudentReceiptReceiver.EXTRA_CAPTURE_ID, notice.candidate.captureId.value)
+            .putExtra(StudentReceiptReceiver.EXTRA_CANDIDATE_CARD_ID, notice.candidate.id.value)
             .putExtra(StudentReceiptReceiver.EXTRA_ACTION, action.name)
         val pendingIntent = PendingIntent.getBroadcast(
             context,
@@ -56,7 +83,25 @@ public class AndroidStudentNotice(private val context: Context) : StudentNotific
         return NotificationCompat.Action.Builder(null, label, pendingIntent).build()
     }
 
-    private companion object {
-        private const val CHANNEL_ID = "student_candidate_notice_v1"
+    private fun openCandidate(notice: CandidateNotice): PendingIntent? {
+        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+            putExtra(CandidateNoticeReceiver.EXTRA_CANDIDATE_CARD_ID, notice.candidate.id.value)
+            putExtra(CandidateNoticeReceiver.EXTRA_OPEN_L1, true)
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        } ?: return null
+        return PendingIntent.getActivity(
+            context,
+            notice.notificationId,
+            launch,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    internal companion object {
+        /** Versioned so old reminder-channel preferences cannot mask L1 message delivery. */
+        internal const val CHANNEL_ID = "student_l1_messages_v4"
+        private const val NOTIFICATION_TAG = "candidate-card"
+        private const val SENDER_NAME = "知行智学"
+        private const val CONVERSATION_TITLE = "学习消息"
     }
 }

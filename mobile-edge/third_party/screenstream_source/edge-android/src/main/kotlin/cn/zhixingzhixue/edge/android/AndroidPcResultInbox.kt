@@ -10,9 +10,12 @@ import kotlinx.coroutines.withContext
  */
 public class AndroidPcResultInbox(
     private val knowledgeVault: AndroidKnowledgeGraphRepository,
+    private val learningContent: AndroidPcLearningContentStore,
 ) {
     public suspend fun accept(raw: String): KnowledgeGraphProjection = withContext(Dispatchers.Default) {
-        knowledgeVault.apply(PcKnowledgeResultCodec.decode(raw))
+        val result = PcKnowledgeResultCodec.decode(raw)
+        val projection = knowledgeVault.apply(result)
+        learningContent.accept(result)
+        projection
     }
 }
-

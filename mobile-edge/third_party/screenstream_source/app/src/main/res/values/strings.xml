@@ -11,10 +11,11 @@
     <string name="app_activity_update_dialog_restart" tools:ignore="UnusedResources">Restart</string>
 
 
-    <string name="app_tab_stream">Learning</string>
-    <string name="app_tab_settings">Devices &amp; media</string>
-    <string name="app_tab_about">About</string>
-    <string name="app_tab_exit">Exit</string>
+    <string name="app_tab_stream">Discover</string>
+    <string name="app_tab_settings">Connection</string>
+    <string name="app_tab_about">Learning analysis</string>
+    <string name="app_tab_agent" tools:ignore="MissingTranslation">Agent</string>
+    <string name="app_tab_exit">Media control</string>
 
     <string name="app_tab_stream_select_mode">Select stream mode:</string>
 

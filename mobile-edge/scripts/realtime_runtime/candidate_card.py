@@ -116,7 +116,7 @@ def build_candidate_card(candidate: FusedCandidate, *, artifact_root: Path) -> d
         "media_range": {"start_pts_ns": candidate.start_pts_ns, "end_pts_ns": candidate.end_pts_ns},
         "facts": facts,
         "display_excerpt": display_excerpt,
-        "student_action": "OPEN_L1_CONCEPT_BRIEF",
+        "student_action": "VIEW_EVIDENCE",
         "uncertainty": "该卡仅保留同源多模态候选证据，不构成兴趣、能力或专注结论。",
         "review_status": "auto",
     }

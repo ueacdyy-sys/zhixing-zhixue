@@ -7,10 +7,11 @@
     <string name="app_activity_update_dialog_message">更新已下载完毕，是否想现在重启程序？</string>
     <string name="app_activity_update_dialog_restart">重启程序</string>
 
-    <string name="app_tab_stream">学习</string>
-    <string name="app_tab_settings">设备与媒体</string>
-    <string name="app_tab_about">关于</string>
-    <string name="app_tab_exit">退出</string>
+    <string name="app_tab_stream">发现</string>
+    <string name="app_tab_settings">连接</string>
+    <string name="app_tab_about">学习分析</string>
+    <string name="app_tab_agent">智能体</string>
+    <string name="app_tab_exit">媒体控制</string>
 
     <string name="app_tab_stream_select_mode">选择串流模式：</string>
 

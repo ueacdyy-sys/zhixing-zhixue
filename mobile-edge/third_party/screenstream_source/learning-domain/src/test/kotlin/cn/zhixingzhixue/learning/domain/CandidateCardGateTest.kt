@@ -54,4 +54,28 @@ class CandidateCardGateTest {
 
         assertNull(card)
     }
+
+    @Test
+    fun `first person evidence keeps its source and may remain sealed before L1 is offered`() {
+        val card = CandidateCardGate.fromTrimodalEvidence(
+            id = CandidateCardId("glasses-card-1"),
+            captureId = CaptureId("glasses-window-1"),
+            visitId = "glasses-visit-1",
+            startPtsNs = 10L,
+            endPtsNs = 20L,
+            evidenceRefs = refs,
+            facts = listOf(
+                CandidateEvidenceFact(CandidateEvidenceLane.ASR, "现场语音"),
+                CandidateEvidenceFact(CandidateEvidenceLane.OCR, "环境文字"),
+                CandidateEvidenceFact(CandidateEvidenceLane.VLM, "第一视角画面事实"),
+            ),
+            displayExcerpt = "第一视角封存片段",
+            source = CandidateMediaSource.GLASSES_FIRST_PERSON,
+            isL1Eligible = false,
+        )
+
+        assertNotNull(card)
+        assertEquals(CandidateMediaSource.GLASSES_FIRST_PERSON, card.source)
+        assertTrue(!card.isL1Eligible)
+    }
 }

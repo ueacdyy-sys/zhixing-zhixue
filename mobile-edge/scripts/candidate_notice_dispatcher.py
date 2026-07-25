@@ -12,6 +12,7 @@ from pathlib import Path
 
 from realtime_runtime.candidate_card import CandidateCardBuildError, build_candidate_card
 from realtime_runtime.contracts import FusedCandidate, FusionMode, SourceContext
+from realtime_runtime.visit_candidate_card import aggregate_visit_cards
 
 
 COMPONENT = "cn.zhixingzhixue.mobile/cn.zhixingzhixue.edge.android.CandidateNoticeReceiver"
@@ -117,14 +118,16 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("a", encoding="utf-8", newline="\n") as output:
         while True:
-            for card, eligibility_reason in _eligible_candidates(args.ledger, args.artifact_root, int(args.maximum_lag_seconds * 1_000_000_000)):
-                window_id = str(card["window_id"])
+            raw = _eligible_candidates(args.ledger, args.artifact_root, int(args.maximum_lag_seconds * 1_000_000_000))
+            reasons = {str(card["visit_id"]): reason for card, reason in raw}
+            for card in aggregate_visit_cards([card for card, _ in raw]):
+                window_id = str(card["card_id"])
                 if window_id in recorded:
                     continue
                 if time.monotonic() - last_sent < args.minimum_interval_seconds:
                     continue
                 ok, detail = _send(args.adb, args.serial, card)
-                event = {"window_id": window_id, "pc_monotonic_ns": time.monotonic_ns(), "stage": "L1_ELIGIBLE", "eligibility_reason": eligibility_reason, "status": "DELIVERED_HEADS_UP" if ok else "FAILED", "detail": detail}
+                event = {"visit_id": str(card["visit_id"]), "pc_monotonic_ns": time.monotonic_ns(), "stage": "L1_ELIGIBLE", "eligibility_reason": reasons.get(str(card["visit_id"]), "VISIT_AGGREGATED"), "status": "DELIVERED_HEADS_UP" if ok else "FAILED", "detail": detail}
                 output.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
                 output.flush()
                 if ok:

@@ -12,6 +12,7 @@ from typing import Any
 from .candidate_card import build_candidate_card
 from .ledger import SealedWindowLedger
 from .semantic_state import VisitSemanticProjector, VisitSemanticSnapshot
+from .visit_candidate_card import aggregate_visit_cards
 
 
 def _snapshot_document(snapshot: VisitSemanticSnapshot) -> dict[str, object]:
@@ -62,7 +63,7 @@ def project_candidate_cards(*, ledger_path: Path, artifact_root: Path, output_pa
             if visit.end_pts_ns is not None:
                 snapshot = projector.close(visit_id, closed_at_pts_ns=visit.end_pts_ns)
             snapshots.append(_snapshot_document(snapshot))
-    cards.sort(key=lambda card: (int(card["media_range"]["start_pts_ns"]), str(card["window_id"])))
+    cards = aggregate_visit_cards(cards)
     snapshots.sort(key=lambda item: str(item["visit_id"]))
     _write_atomic(
         output_path,

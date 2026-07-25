@@ -2,15 +2,26 @@ package cn.zhixingzhixue.edge.android
 
 import androidx.compose.ui.graphics.Color
 
-/** Product color tokens: restrained cool whites plus a single deep-blue action color. */
+/**
+ * Native V5 design tokens, measured from the approved HTML prototype.
+ *
+ * Keep these values semantic.  Screen code must not create a second set of
+ * arbitrary colours, radii, or oversized type styles.
+ */
 internal object ZhixingVisualTokens {
-    val CanvasTop: Color = Color(0xFFF8FAFE)
-    val CanvasBottom: Color = Color(0xFFE9F0FA)
-    val Ink: Color = Color(0xFF102033)
-    val SecondaryInk: Color = Color(0xFF5E6C7D)
-    val Accent: Color = Color(0xFF0A5EA8)
-    val AccentSoft: Color = Color(0x1A0A5EA8)
-    val Glass: Color = Color(0xCCFFFFFF)
-    val GlassBorder: Color = Color(0x73FFFFFF)
-    val Quiet: Color = Color(0xFFE9EFF6)
+    val CanvasTop: Color = Color(0xFFF7FBFF)
+    val CanvasBottom: Color = Color(0xFFEFF6FC)
+    val Ink: Color = Color(0xFF1D1D1F)
+    val SecondaryInk: Color = Color(0xFF6E6E73)
+    val Accent: Color = Color(0xFF1877E6)
+    val AccentSoft: Color = Color(0xFFEAF3FF)
+    val Glass: Color = Color(0xEBFFFFFF)
+    val GlassBorder: Color = Color(0xFFF2F7FC)
+    val Quiet: Color = Color(0xFFF0F4F8)
+    val Positive: Color = Color(0xFF16804A)
+    val PositiveSoft: Color = Color(0xFFEAF6EE)
+    val Warning: Color = Color(0xFF9F6200)
+    val WarningSoft: Color = Color(0xFFFFF4DC)
+    val Danger: Color = Color(0xFFBD3245)
+    val DangerSoft: Color = Color(0xFFFFF0F2)
 }

@@ -9,6 +9,12 @@ public enum class CandidateCardClassification {
     CANDIDATE_ONLY,
 }
 
+/** Evidence source is explicit so phone screen and first-person sessions never mix silently. */
+public enum class CandidateMediaSource {
+    PHONE_SCREEN,
+    GLASSES_FIRST_PERSON,
+}
+
 public enum class CandidateEvidenceLane {
     ASR,
     OCR,
@@ -43,6 +49,7 @@ public data class CandidateCard(
     val displayExcerpt: String,
     val classification: CandidateCardClassification,
     val isL1Eligible: Boolean,
+    val source: CandidateMediaSource = CandidateMediaSource.PHONE_SCREEN,
 ) {
     init {
         require(visitId.isNotBlank()) { "candidate_card_visit_required" }
@@ -51,7 +58,6 @@ public data class CandidateCard(
         require(evidenceRefs.distinct().size == evidenceRefs.size) { "candidate_card_evidence_duplicate" }
         require(facts.map { it.lane }.toSet() == CandidateEvidenceLane.entries.toSet()) { "candidate_card_trimodal_facts_required" }
         require(classification == CandidateCardClassification.CANDIDATE_ONLY) { "candidate_card_must_remain_candidate_only" }
-        require(isL1Eligible) { "candidate_card_complete_evidence_required_for_l1" }
     }
 }
 
@@ -69,6 +75,8 @@ public object CandidateCardGate {
         evidenceRefs: List<LocalEvidenceRef>,
         facts: List<CandidateEvidenceFact>,
         displayExcerpt: String,
+        source: CandidateMediaSource = CandidateMediaSource.PHONE_SCREEN,
+        isL1Eligible: Boolean = true,
     ): CandidateCard? {
         if (
             evidenceRefs.size != CandidateEvidenceLane.entries.size ||
@@ -88,7 +96,8 @@ public object CandidateCardGate {
             facts = facts,
             displayExcerpt = displayExcerpt.trim(),
             classification = CandidateCardClassification.CANDIDATE_ONLY,
-            isL1Eligible = true,
+            isL1Eligible = isL1Eligible,
+            source = source,
         )
     }
 }

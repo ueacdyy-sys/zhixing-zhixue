@@ -6,6 +6,9 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -45,16 +48,22 @@ public class SingleActivity : androidx.activity.ComponentActivity() {
     private val appSettings: AppSettings by inject(mode = LazyThreadSafetyMode.NONE)
     private var deferredModuleId: StreamingModule.Id? = null
     private var moduleStartInProgress: StreamingModule.Id? = null
+    private var launchCandidateCardId by mutableStateOf<String?>(null)
+    private var launchOpenL1 by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         XLog.d(this@SingleActivity.getLog("onCreate", "Bug workaround: ${window.decorView}"))
         super.onCreate(savedInstanceState)
         MobileAppServices.initialize(applicationContext)
+        applyLearningNotificationIntent(intent)
 
         setContent {
             ScreenStreamTheme {
-                ScreenStreamContent(intent.getStringExtra(CandidateNoticeReceiver.EXTRA_CANDIDATE_CARD_ID))
+                ScreenStreamContent(
+                    initialCandidateCardId = launchCandidateCardId,
+                    initialOpenL1 = launchOpenL1,
+                )
             }
         }
 
@@ -94,6 +103,17 @@ public class SingleActivity : androidx.activity.ComponentActivity() {
             }
             .flowWithLifecycle(lifecycle, minActiveState = Lifecycle.State.RESUMED)
             .launchIn(lifecycleScope)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyLearningNotificationIntent(intent)
+    }
+
+    private fun applyLearningNotificationIntent(intent: Intent) {
+        launchCandidateCardId = intent.getStringExtra(CandidateNoticeReceiver.EXTRA_CANDIDATE_CARD_ID)
+        launchOpenL1 = intent.getBooleanExtra(CandidateNoticeReceiver.EXTRA_OPEN_L1, false)
     }
 
     private suspend fun startModuleWithCheck(moduleId: StreamingModule.Id) {

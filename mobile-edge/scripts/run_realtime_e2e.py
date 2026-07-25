@@ -148,11 +148,15 @@ def main() -> int:
     parser.add_argument("--adb-serial", default=None)
     parser.add_argument("--touch-device", default="/dev/input/event1")
     parser.add_argument("--enable-candidate-notifications", action="store_true")
+    parser.add_argument("--pc-outbox-gateway", default=None, help="Paired-PC local hub URL for formal candidate delivery.")
+    parser.add_argument("--pc-outbox-device-id", default=None)
     args = parser.parse_args()
     if args.duration_seconds < 0:
         raise SystemExit("duration must be non-negative")
     if args.fragments_per_window < 1 or args.window_hop_fragments < 1:
         raise SystemExit("window_fragment_counts_must_be_positive")
+    if bool(args.pc_outbox_gateway) != bool(args.pc_outbox_device_id):
+        raise SystemExit("pc_outbox_gateway_and_device_id_must_be_provided_together")
 
     for profile in LANES:
         _require_file(profile.python, f"python_{profile.lane.lower()}")
@@ -168,6 +172,7 @@ def main() -> int:
     sampler: subprocess.Popen[str] | None = None
     touch_monitor: subprocess.Popen[str] | None = None
     notice_dispatcher: subprocess.Popen[str] | None = None
+    outbox_publisher: subprocess.Popen[str] | None = None
     ingress: subprocess.Popen[str] | None = None
     progress_file: TextIO | None = None
     try:
@@ -204,6 +209,15 @@ def main() -> int:
                 cwd=ROOT, env=_environment(), text=True,
                 stdout=(output / "notice_dispatcher.out").open("w", encoding="utf-8"),
                 stderr=(output / "notice_dispatcher.err").open("w", encoding="utf-8"),
+            )
+        if args.pc_outbox_gateway:
+            outbox_publisher = subprocess.Popen(
+                [str(PY311), str(SCRIPTS / "pc_outbox_candidate_publisher.py"), "--ledger", str(ledger),
+                 "--artifact-root", str(artifacts), "--gateway", args.pc_outbox_gateway,
+                 "--device-id", args.pc_outbox_device_id, "--output", str(output / "candidate_outbox_delivery.jsonl")],
+                cwd=ROOT, env=_environment(), text=True,
+                stdout=(output / "outbox_publisher.out").open("w", encoding="utf-8"),
+                stderr=(output / "outbox_publisher.err").open("w", encoding="utf-8"),
             )
         ingress_command = [str(PY311), "-m", "realtime_runtime.pipeline", "--source", args.source,
              "--session-id", output.name, "--output-dir", str(output), "--fragment-seconds", "2",
@@ -249,7 +263,7 @@ def main() -> int:
     finally:
         if progress_file is not None:
             progress_file.close()
-        _terminate(list(workers.values()) + [item for item in (sampler, touch_monitor, notice_dispatcher, ingress) if item is not None])
+        _terminate(list(workers.values()) + [item for item in (sampler, touch_monitor, notice_dispatcher, outbox_publisher, ingress) if item is not None])
 
 
 if __name__ == "__main__":

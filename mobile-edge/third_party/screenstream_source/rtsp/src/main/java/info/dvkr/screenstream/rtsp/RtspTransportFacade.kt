@@ -2,6 +2,8 @@ package info.dvkr.screenstream.rtsp
 
 import android.os.Handler
 import android.os.Looper
+import android.content.Intent
+import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -10,6 +12,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import info.dvkr.screenstream.rtsp.internal.MasterClock
+import info.dvkr.screenstream.rtsp.internal.RtspEvent
+import info.dvkr.screenstream.rtsp.internal.RtspStreamingService
 
 /** Stable, business-safe read model for the ScreenStream RTSP transport. */
 public enum class RtspTransportStatus {
@@ -27,6 +31,8 @@ public data class RtspTransportSnapshot(
     val endpoint: String?,
     val deviceAudioAvailable: Boolean,
     val failureCode: String?,
+    /** Present only while the user-authorized MediaProjection dialog is pending. */
+    val startAttemptId: String? = null,
     val timing: RtspTransportTimingSnapshot? = null
 )
 
@@ -70,9 +76,9 @@ public object RtspClockProbe {
 }
 
 /**
- * This facade intentionally exposes observation only. Projection permission and
- * start/stop remain in the explicit RTSP media-control UI, so a business use
- * case cannot start background capture without student action.
+ * Bridge between the V5 media-session screen and the existing RTSP module.
+ * Capture can only be initiated from a foreground UI action and still requires
+ * the system MediaProjection dialog; the facade never starts capture itself.
  */
 public class RtspTransportFacade(private val module: RtspStreamingModule) {
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -81,8 +87,14 @@ public class RtspTransportFacade(private val module: RtspStreamingModule) {
         .map { source ->
             val consumerCount = source.serverClientStats.count { it.lastSentAtMs > 0L }
             val status = when {
-                source.error != null -> RtspTransportStatus.ERROR
+                // A new capture request is authoritative while its
+                // MediaProjection consent is outstanding.  A recoverable
+                // error from an earlier attempt may still be retained by the
+                // RTSP service, but it must never hide the new attempt: doing
+                // so prevents the Compose permission launcher from receiving
+                // startAttemptId and leaves the request suspended forever.
                 source.waitingCastPermission -> RtspTransportStatus.WAITING_FOR_USER_PERMISSION
+                source.error != null -> RtspTransportStatus.ERROR
                 source.isStreaming && consumerCount == 0 -> RtspTransportStatus.STREAMING_NO_CONSUMER
                 source.isStreaming -> RtspTransportStatus.STREAMING
                 source.isBusy -> RtspTransportStatus.STARTING
@@ -94,6 +106,7 @@ public class RtspTransportFacade(private val module: RtspStreamingModule) {
                 endpoint = source.serverBindings.firstOrNull()?.fullAddress,
                 deviceAudioAvailable = source.selectedAudioEncoder != null,
                 failureCode = source.error?.javaClass?.simpleName,
+                startAttemptId = source.startAttemptId,
                 timing = MasterClock.snapshot().let { clock ->
                     RtspTransportTimingSnapshot(
                         sessionEpochId = clock.sessionEpochId,
@@ -117,5 +130,27 @@ public class RtspTransportFacade(private val module: RtspStreamingModule) {
      */
     public fun requestSyncFrame() {
         Handler(Looper.getMainLooper()).post { module.requestKeyFrame() }
+    }
+
+    /** Creates a capture attempt; the caller must subsequently obtain system consent. */
+    public fun beginUserCapture(context: Context, permissionEducationShown: Boolean) {
+        Handler(Looper.getMainLooper()).post {
+            module.requestUserCapture(context, permissionEducationShown)
+        }
+    }
+
+    /** Supplies the MediaProjection consent returned by the system dialog. */
+    public fun submitProjectionPermission(startAttemptId: String, permissionIntent: Intent) {
+        Handler(Looper.getMainLooper()).post { module.startProjection(startAttemptId, permissionIntent) }
+    }
+
+    /** Cancels the pending capture attempt after the user declines system consent. */
+    public fun rejectProjectionPermission(startAttemptId: String) {
+        Handler(Looper.getMainLooper()).post { module.sendEvent(RtspEvent.CastPermissionsDenied(startAttemptId)) }
+    }
+
+    /** Stops only the active user-authorized RTSP session. */
+    public fun stopUserCapture() {
+        Handler(Looper.getMainLooper()).post { module.stopStream("User action: V5 media session") }
     }
 }

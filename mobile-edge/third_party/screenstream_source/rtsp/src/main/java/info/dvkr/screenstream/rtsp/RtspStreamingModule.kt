@@ -40,6 +40,10 @@ public class RtspStreamingModule : StreamingModule {
     internal val rtspStateFlow: StateFlow<RtspState> = _rtspStateFlow.asStateFlow()
     private var startToken: String? = null
     private var streamingService: RtspStreamingService? = null
+    /** A V5 start tap may arrive while the module service is still starting.
+     * Keep exactly one user request and deliver it after the service is ready;
+     * previously this was discarded as a stale event. */
+    private var pendingUserCaptureEducationShown: Boolean? = null
 
     override val id: StreamingModule.Id = Id
     override val priority: Int = 10
@@ -130,8 +134,18 @@ public class RtspStreamingModule : StreamingModule {
                     streamingService = createdStreamingService
                     _streamingServiceState.value = StreamingModule.State.Running(scope)
                     createdStreamingService.start()
+                    pendingUserCaptureEducationShown?.let { educationShown ->
+                        pendingUserCaptureEducationShown = null
+                        createdStreamingService.sendEvent(
+                            RtspStreamingService.InternalEvent.StartStream(
+                                permissionEducationShown = educationShown,
+                                clearStartupPolicyError = false,
+                            ),
+                        )
+                    }
                 } catch (t: Throwable) {
                     streamingService = null
+                    pendingUserCaptureEducationShown = null
                     scope.close()
                     _streamingServiceState.value = StreamingModule.State.Initiated
                     throw t
@@ -161,6 +175,7 @@ public class RtspStreamingModule : StreamingModule {
                 XLog.d(getLog("stopModule", "Not started (PendingStart)"))
                 startToken = null
                 streamingService = null
+                pendingUserCaptureEducationShown = null
                 _rtspStateFlow.value = RtspState()
                 _streamingServiceState.value = StreamingModule.State.Initiated
             }
@@ -175,7 +190,8 @@ public class RtspStreamingModule : StreamingModule {
                         else XLog.w(getLog("stopModule", "Running state without RtspStreamingService"))
                     }
                 } finally {
-                    streamingService = null
+                streamingService = null
+                pendingUserCaptureEducationShown = null
                     _rtspStateFlow.value = RtspState()
                     startToken = null
                     state.scope.close()
@@ -247,6 +263,45 @@ public class RtspStreamingModule : StreamingModule {
                     RuntimeException("Unexpected state: $state for event $event")
                 )
             }
+        }
+    }
+
+    /** Starts capture after the RTSP foreground service is ready.  The call is
+     * made from the foreground Activity, so starting the module here is legal.
+     * It fixes the PendingStart race without inventing a local UI-only state. */
+    @MainThread
+    internal fun requestUserCapture(context: Context, permissionEducationShown: Boolean) {
+        check(Looper.getMainLooper().isCurrentThread) { "Only main thread allowed" }
+        when (val state = _streamingServiceState.value) {
+            is StreamingModule.State.Running -> {
+                val activeStreamingService = streamingService
+                if (activeStreamingService != null) {
+                    activeStreamingService.sendEvent(
+                        RtspStreamingService.InternalEvent.StartStream(
+                            permissionEducationShown = permissionEducationShown,
+                            clearStartupPolicyError = false,
+                        ),
+                    )
+                } else XLog.w(getLog("requestUserCapture", "Running state without RtspStreamingService"))
+            }
+
+            StreamingModule.State.Initiated -> {
+                pendingUserCaptureEducationShown = permissionEducationShown
+                try {
+                    startModule(context)
+                } catch (error: Throwable) {
+                    pendingUserCaptureEducationShown = null
+                    throw error
+                }
+            }
+
+            StreamingModule.State.PendingStart -> {
+                pendingUserCaptureEducationShown = permissionEducationShown
+                XLog.i(getLog("requestUserCapture", "Queued while service is starting"))
+            }
+
+            StreamingModule.State.PendingStop ->
+                XLog.w(getLog("requestUserCapture", "Ignoring request while module is stopping: $state"))
         }
     }
 

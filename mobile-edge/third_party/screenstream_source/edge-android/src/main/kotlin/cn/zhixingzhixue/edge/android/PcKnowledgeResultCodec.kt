@@ -5,6 +5,9 @@ import cn.zhixingzhixue.learning.domain.KnowledgeRelationship
 import cn.zhixingzhixue.learning.domain.LocalEvidenceRef
 import cn.zhixingzhixue.learning.domain.MobileSessionId
 import cn.zhixingzhixue.learning.domain.PcKnowledgeAnalysisResult
+import cn.zhixingzhixue.learning.domain.PcLearningContent
+import cn.zhixingzhixue.learning.domain.TrustedLearningResource
+import cn.zhixingzhixue.learning.domain.CandidateMediaSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.OffsetDateTime
@@ -25,6 +28,8 @@ public object PcKnowledgeResultCodec {
             createdAt = OffsetDateTime.parse(document.getString("created_at")),
             evidenceRefs = references(document.getJSONArray("evidence_refs")),
             associations = associations(document.getJSONArray("associations")),
+            learningContent = document.optJSONObject("learning_content")?.let(::learningContent),
+            source = source(document.optString("source_context", "PHONE_DAILY")),
         )
     }
 
@@ -41,4 +46,32 @@ public object PcKnowledgeResultCodec {
 
     private fun references(values: JSONArray): List<LocalEvidenceRef> =
         List(values.length()) { index -> LocalEvidenceRef(values.getString(index)) }
+
+    private fun learningContent(value: JSONObject): PcLearningContent = PcLearningContent(
+        contentId = value.getString("content_id"),
+        conceptTitle = value.getString("concept_title"),
+        conceptBrief = value.getString("concept_brief"),
+        background = value.getString("background"),
+        workedExample = value.getString("worked_example"),
+        guidedPractice = value.getString("guided_practice"),
+        selfPractice = value.getString("self_practice"),
+        trustedResources = value.getJSONArray("trusted_resources").let { resources ->
+            List(resources.length()) { index ->
+                resources.getJSONObject(index).let { resource ->
+                    TrustedLearningResource(
+                        title = resource.getString("title"),
+                        publisher = resource.getString("publisher"),
+                        url = resource.getString("url"),
+                    )
+                }
+            }
+        },
+        evidenceRefs = references(value.getJSONArray("evidence_refs")),
+    )
+
+    private fun source(value: String): CandidateMediaSource = when (value) {
+        "PHONE_DAILY", "PHONE_SCREEN" -> CandidateMediaSource.PHONE_SCREEN
+        "GLASSES_FIRST_PERSON" -> CandidateMediaSource.GLASSES_FIRST_PERSON
+        else -> throw IllegalArgumentException("pc_analysis_source_context_invalid")
+    }
 }

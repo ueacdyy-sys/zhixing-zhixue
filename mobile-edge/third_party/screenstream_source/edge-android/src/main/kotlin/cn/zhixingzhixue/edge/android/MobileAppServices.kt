@@ -1,6 +1,7 @@
 package cn.zhixingzhixue.edge.android
 
 import android.content.Context
+import cn.zhixingzhixue.learning.application.RecordStudentLearningResponse
 
 /**
  * Process-scoped composition root for the student product.
@@ -15,9 +16,17 @@ public object MobileAppServices {
 
     private lateinit var candidateStoreValue: AndroidCandidateCardRepository
     private lateinit var knowledgeVaultValue: AndroidKnowledgeGraphRepository
+    private lateinit var knowledgeGraphEventStoreValue: AndroidKnowledgeGraphEventStore
+    private lateinit var knowledgeGraphSyncClientValue: PcKnowledgeGraphSyncClient
     private lateinit var learningPathStoreValue: AndroidLearningPathStore
+    private lateinit var learningContentStoreValue: AndroidPcLearningContentStore
+    private lateinit var learningResponseStoreValue: AndroidLearningResponseStore
+    private lateinit var learningResponseRecorderValue: RecordStudentLearningResponse
+    private lateinit var agentWorkspaceStoreValue: AndroidAgentWorkspaceStore
+    private lateinit var pcAgentGatewayClientValue: PcAgentGatewayClient
     private lateinit var pcLinkStoreValue: AndroidPcDeliveryLinkStore
     private lateinit var pcInboxValue: AndroidPcResultInbox
+    private lateinit var pcCandidateInboxValue: PcCandidateCardInbox
     private lateinit var pcDeliveryClientValue: PcDeliveryClient
 
     public fun initialize(context: Context) {
@@ -27,10 +36,21 @@ public object MobileAppServices {
             appContext = context.applicationContext
             candidateStoreValue = AndroidCandidateCardRepository(appContext)
             knowledgeVaultValue = AndroidKnowledgeGraphRepository(appContext)
+            knowledgeGraphEventStoreValue = AndroidKnowledgeGraphEventStore(appContext)
             learningPathStoreValue = AndroidLearningPathStore(appContext)
+            learningContentStoreValue = AndroidPcLearningContentStore(appContext)
+            learningResponseStoreValue = AndroidLearningResponseStore(appContext)
+            learningResponseRecorderValue = RecordStudentLearningResponse(
+                AndroidLearningResponseEligibility(learningContentStoreValue, learningPathStoreValue),
+                learningResponseStoreValue,
+            )
+            agentWorkspaceStoreValue = AndroidAgentWorkspaceStore(appContext)
             pcLinkStoreValue = AndroidPcDeliveryLinkStore(appContext)
-            pcInboxValue = AndroidPcResultInbox(knowledgeVaultValue)
-            pcDeliveryClientValue = PcDeliveryClient(pcLinkStoreValue, pcInboxValue)
+            pcAgentGatewayClientValue = PcAgentGatewayClient(pcLinkStoreValue)
+            pcInboxValue = AndroidPcResultInbox(knowledgeVaultValue, learningContentStoreValue)
+            pcCandidateInboxValue = PcCandidateCardInbox(candidateStoreValue, AndroidStudentNotice(appContext))
+            knowledgeGraphSyncClientValue = PcKnowledgeGraphSyncClient(pcLinkStoreValue, knowledgeGraphEventStoreValue, pcInboxValue)
+            pcDeliveryClientValue = PcDeliveryClient(pcLinkStoreValue, pcInboxValue, pcCandidateInboxValue, knowledgeGraphSyncClientValue)
             initialized = true
         }
     }
@@ -45,9 +65,39 @@ public object MobileAppServices {
         return knowledgeVaultValue
     }
 
+    public fun knowledgeGraphEventStore(context: Context): AndroidKnowledgeGraphEventStore {
+        initialize(context)
+        return knowledgeGraphEventStoreValue
+    }
+
     public fun learningPathStore(context: Context): AndroidLearningPathStore {
         initialize(context)
         return learningPathStoreValue
+    }
+
+    public fun learningContentStore(context: Context): AndroidPcLearningContentStore {
+        initialize(context)
+        return learningContentStoreValue
+    }
+
+    public fun learningResponseStore(context: Context): AndroidLearningResponseStore {
+        initialize(context)
+        return learningResponseStoreValue
+    }
+
+    public fun learningResponseRecorder(context: Context): RecordStudentLearningResponse {
+        initialize(context)
+        return learningResponseRecorderValue
+    }
+
+    public fun agentWorkspaceStore(context: Context): AndroidAgentWorkspaceStore {
+        initialize(context)
+        return agentWorkspaceStoreValue
+    }
+
+    public fun pcAgentGatewayClient(context: Context): PcAgentGatewayClient {
+        initialize(context)
+        return pcAgentGatewayClientValue
     }
 
     public fun pcLinkStore(context: Context): AndroidPcDeliveryLinkStore {

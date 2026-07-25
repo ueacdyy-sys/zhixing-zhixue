@@ -38,6 +38,21 @@ public class AndroidLearningPathStore(context: Context) {
         return true
     }
 
+    /** A PC content package is complete only when the decoder accepted all L1-L4 fields. */
+    public fun dispatchContent(contentId: String, action: StudentLearningAction): Boolean {
+        val transition = LearningPathReducer.reduce(
+            current = stateFor(contentId),
+            action = action,
+            hasCompleteCandidateEvidence = true,
+            resourceAvailability = KnowledgeResourceAvailability.AVAILABLE,
+        )
+        if (!transition.accepted) return false
+        val updated = paths.value + (contentId to transition.state)
+        preferences.edit().putString(contentId, transition.state.stage.name).apply()
+        paths.value = updated
+        return true
+    }
+
     private fun readAll(): Map<String, LearningPathState> = preferences.all.mapNotNull { (key, value) ->
         val stage = (value as? String)?.let { runCatching { LearningStage.valueOf(it) }.getOrNull() } ?: return@mapNotNull null
         key to LearningPathState(stage)

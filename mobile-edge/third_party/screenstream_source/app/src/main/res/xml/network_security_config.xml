@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Cleartext is forbidden in every build. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <!--
+      Debug-only LAN gateway: trust only the bundled short-lived development
+      CA, in addition to any user CA deliberately installed for diagnosis.
+      GatewayTlsConnectionFactory also requires the exact SPKI pin.
+    -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+            <certificates src="@raw/zhixing_lan_ca" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

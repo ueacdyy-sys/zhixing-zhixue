@@ -3,205 +3,52 @@ package info.dvkr.screenstream.ui
 import android.Manifest
 import android.os.Build
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
-import androidx.annotation.DrawableRes
-import androidx.annotation.StringRes
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.EaseIn
-import androidx.compose.animation.core.EaseOut
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarDefaults
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
-import androidx.compose.material3.adaptive.currentWindowSize
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldLayout
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.toIntRect
-import androidx.compose.ui.unit.toRect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.dropUnlessStarted
-import androidx.window.core.layout.WindowSizeClass
-import cn.zhixingzhixue.edge.android.StudentHomeContent
-import info.dvkr.screenstream.R
+import cn.zhixingzhixue.edge.android.V5NativeApp
 import info.dvkr.screenstream.common.isPermissionGranted
 import info.dvkr.screenstream.network.LocalNetworkPermission
 import info.dvkr.screenstream.notification.NotificationPermission
-import info.dvkr.screenstream.ui.tabs.about.AboutTabContent
-import info.dvkr.screenstream.ui.tabs.exit.ExitTabContent
-import info.dvkr.screenstream.ui.tabs.settings.SettingsTabContent
-import info.dvkr.screenstream.ui.tabs.stream.StreamTabContent
 
+/** Entry point: the former Compose front-end is no longer part of the route tree. */
 @Composable
 internal fun ScreenStreamContent(
-    initialCandidateCardId: String? = null,
     modifier: Modifier = Modifier,
+    initialCandidateCardId: String? = null,
+    initialOpenL1: Boolean = false,
 ) {
-    MainContent(
+    V5NativeApp(
         initialCandidateCardId = initialCandidateCardId,
-        modifier = modifier
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .fillMaxSize()
+        initialOpenL1 = initialOpenL1,
+        modifier = modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxSize(),
     )
 
-
     val context = LocalContext.current
-    val isNotificationPermissionMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            context.isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS).not()
-    val localNetworkPermissionEnabled = rememberSaveable {
-        mutableStateOf(isNotificationPermissionMissing.not())
-    }
+    val notificationMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        !context.isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)
+    val localNetworkEnabled = rememberSaveable { mutableStateOf(!notificationMissing) }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        NotificationPermission(onCanRequestNextPermissionChange = { localNetworkPermissionEnabled.value = it })
+        NotificationPermission(onCanRequestNextPermissionChange = { localNetworkEnabled.value = it })
     }
-    if (Build.VERSION.SDK_INT >= 37) {
-        LocalNetworkPermission(enabled = localNetworkPermissionEnabled.value)
-    }
-}
-internal enum class AppTabs(
-    @field:DrawableRes internal val image: Int,
-    @field:DrawableRes internal val imageSelected: Int,
-    @field:StringRes internal val label: Int
-) {
-    STREAM(R.drawable.stream_24px, R.drawable.stream_24px, R.string.app_tab_stream),
-    SETTINGS(R.drawable.settings_24px, R.drawable.settings_filled_24px, R.string.app_tab_settings),
-    ABOUT(R.drawable.info_24px, R.drawable.info_filled_24px, R.string.app_tab_about),
-    EXIT(R.drawable.close_24px, R.drawable.close_24px, R.string.app_tab_exit)
-}
+    if (Build.VERSION.SDK_INT >= 37) LocalNetworkPermission(enabled = localNetworkEnabled.value)
 
-@Composable
-private fun MainContent(
-    initialCandidateCardId: String?,
-    modifier: Modifier = Modifier
-) {
-    val selectedTab = rememberSaveable { mutableStateOf(AppTabs.STREAM) }
-
-    BackHandler(enabled = selectedTab.value != AppTabs.STREAM) { selectedTab.value = AppTabs.STREAM }
-
-    val layoutType = with(currentWindowAdaptiveInfo()) {
-        when {
-            windowPosture.isTabletop -> NavigationSuiteType.NavigationBar
-            windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND) -> NavigationSuiteType.NavigationRail
-            else -> NavigationSuiteType.NavigationBar
-        }
-    }
-
-    val windowSize = currentWindowSize()
-    val contentBoundsInWindow = remember(windowSize) { mutableStateOf(windowSize.toIntRect().toRect()) }
-
-    Surface(
-        modifier = modifier,
-        color = NavigationSuiteScaffoldDefaults.containerColor,
-        contentColor = NavigationSuiteScaffoldDefaults.contentColor
-    ) {
-        NavigationSuiteScaffoldLayout(
-            navigationSuite = {
-                when (layoutType) {
-                    NavigationSuiteType.NavigationBar -> NavigationBar {
-                        AppTabs.entries.forEach { tab ->
-                            NavigationBarItem(
-                                selected = selectedTab.value == tab,
-                                onClick = dropUnlessStarted { selectedTab.value = tab },
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(if (selectedTab.value == tab) tab.imageSelected else tab.image),
-                                        null
-                                    )
-                                },
-                                modifier = Modifier.padding(horizontal = 4.dp),
-                                label = { Text(text = stringResource(tab.label)) },
-                            )
-                        }
-                    }
-
-                    NavigationSuiteType.NavigationRail -> NavigationRail {
-                        Spacer(Modifier.weight(0.5f))
-                        AppTabs.entries.forEach { tab ->
-                            NavigationRailItem(
-                                selected = selectedTab.value == tab,
-                                onClick = dropUnlessStarted { selectedTab.value = tab },
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(if (selectedTab.value == tab) tab.imageSelected else tab.image),
-                                        null
-                                    )
-                                },
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                label = { Text(text = stringResource(tab.label)) }
-                            )
-                        }
-                        Spacer(Modifier.weight(1f))
-                    }
-
-                    else -> throw UnsupportedOperationException("Unsupported NavigationSuiteType: $layoutType")
-                }
-            },
-            layoutType = layoutType
-        ) {
-            AnimatedContent(
-                targetState = selectedTab.value,
-                modifier = Modifier.onPlaced { contentBoundsInWindow.value = it.boundsInWindow() },
-                transitionSpec = {
-                    fadeIn(animationSpec = tween(300, delayMillis = 90, easing = EaseIn))
-                        .togetherWith(fadeOut(animationSpec = tween(150, easing = EaseOut)))
-                },
-                label = "TabContent"
-            ) { tab ->
-                when (tab) {
-                    AppTabs.STREAM -> StudentHomeContent(
-                        onOpenMediaControl = { selectedTab.value = AppTabs.SETTINGS },
-                        focusCandidateCardId = initialCandidateCardId,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    AppTabs.SETTINGS -> StreamTabContent(contentBoundsInWindow.value, modifier = Modifier.fillMaxSize())
-                    AppTabs.ABOUT -> AboutTabContent(modifier = Modifier.fillMaxSize())
-                    AppTabs.EXIT -> ExitTabContent(modifier = Modifier.fillMaxSize())
-                }
-        }
-    }
-}
     val view = LocalView.current
-    if (view.isInEditMode.not()) {
-        val statusBarColor = MaterialTheme.colorScheme.background
-
-        val navigationBarColor = if (layoutType != NavigationSuiteType.NavigationBar) MaterialTheme.colorScheme.background
-        else NavigationBarDefaults.containerColor
-
+    if (!view.isInEditMode) {
         SideEffect {
             (view.context as ComponentActivity).apply {
-                enableEdgeToEdge(statusBarColor = statusBarColor, navigationBarColor = navigationBarColor)
-                window.decorView.setBackgroundColor(statusBarColor.toArgb())
+                enableEdgeToEdge(statusBarColor = Color(0xFFF2F7FC), navigationBarColor = Color(0xFFF2F7FC))
+                window.decorView.setBackgroundColor(Color(0xFFF2F7FC).toArgb())
             }
         }
     }
