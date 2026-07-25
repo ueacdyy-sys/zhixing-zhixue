@@ -48,3 +48,6 @@ design/mobile-ui-prototype-v5/preview-*.png
 design/native-ui-audit/
 mobile-edge/docs/zhixing-*.png
 mobile-edge/docs/zhixing-*.xml
+
+# 本机标注工具、模型标注数据与第三方下载包，不进入产品源码仓库。
+tools/annotation/
