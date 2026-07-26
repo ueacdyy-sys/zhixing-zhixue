@@ -17,6 +17,7 @@ from vlm_innovation.dataset import assign_video_level_splits, audit_dataset, bui
 from vlm_innovation.features import FEATURE_NAMES, extract_record_features  # noqa: E402
 from vlm_innovation.smolvlm_visual_cache import SmolVlmVisualTokenAdapter  # noqa: E402
 from vlm_innovation.evaluation import InnovationContractError as EvaluationContractError, Prediction, Variant, evaluate  # noqa: E402
+from vlm_innovation.validate_label_export import audit_export  # noqa: E402
 
 
 HASH = "a" * 64
@@ -106,6 +107,14 @@ class VlmInnovationTests(unittest.TestCase):
             rows.append(Prediction(variant, "one", "single-video", True, False, False, True, True, 10.0, 100.0, 50.0, False, 1.0, "技术演示"))
         with self.assertRaises(EvaluationContractError):
             evaluate(rows)
+
+    def test_label_export_rejects_old_incomplete_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            export = Path(temp) / "annotations.jsonl"
+            export.write_text(json.dumps({"annotation_id": 1, "dataset_record_id": "r1", "ground_truth": False, "result": [{"from_name": "topic"}]}) + "\n", encoding="utf-8")
+            report = audit_export(export)
+            self.assertFalse(report["eligible_for_training_supervision"])
+            self.assertEqual(1, report["missing_required_v2_fields"])
 
 
 if __name__ == "__main__":
