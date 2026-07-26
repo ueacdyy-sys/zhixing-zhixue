@@ -18,6 +18,7 @@ from vlm_innovation.features import FEATURE_NAMES, extract_record_features  # no
 from vlm_innovation.smolvlm_visual_cache import SmolVlmVisualTokenAdapter  # noqa: E402
 from vlm_innovation.evaluation import InnovationContractError as EvaluationContractError, Prediction, Variant, evaluate  # noqa: E402
 from vlm_innovation.validate_label_export import audit_export  # noqa: E402
+from vlm_innovation.import_authorized_bundle import import_bundle  # noqa: E402
 
 
 HASH = "a" * 64
@@ -115,6 +116,24 @@ class VlmInnovationTests(unittest.TestCase):
             report = audit_export(export)
             self.assertFalse(report["eligible_for_training_supervision"])
             self.assertEqual(1, report["missing_required_v2_fields"])
+
+    def test_authorized_import_preserves_source_hash_and_requires_real_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, artifacts, destination = root / "source", root / "source" / "artifacts", root / "destination"
+            (artifacts / "windows").mkdir(parents=True)
+            video = artifacts / "windows" / "item.mp4"
+            video.write_bytes(b"sealed-media")
+            media_hash = hashlib.sha256(b"sealed-media").hexdigest()
+            window = "session-1:window:000001"
+            (artifacts / "item.full-video-vlm.json").write_text(json.dumps({"window_id": window, "media_sha256": media_hash, "coverage": {"start_pts_ns": 1, "end_pts_ns": 9}}), encoding="utf-8")
+            for lane in ("ocr", "asr"):
+                (artifacts / f"item.{lane}.json").write_text(json.dumps({"window_id": window, "input_media_sha256": media_hash, "coverage_start_pts_ns": 1, "coverage_end_pts_ns": 9}), encoding="utf-8")
+            result = import_bundle(source_root=source, destination=destination, source_video_group="open-video-a", verified_source_video_hash="c" * 64, rights_basis="OPEN_LICENSE", rights_reference="CC-BY-4.0", content_type="技术演示")
+            self.assertEqual("IMPORTED_PENDING_HUMAN_REVIEW", result["status"])
+            record = json.loads((destination / "manifest.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual("c" * 64, record["verified_source_video_hash"])
+            self.assertEqual("PENDING_LABEL_STUDIO_V2_HUMAN_REVIEW", record["annotation_state"])
 
 
 if __name__ == "__main__":
