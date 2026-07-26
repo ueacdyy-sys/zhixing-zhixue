@@ -20,6 +20,7 @@ from vlm_innovation.evaluation import InnovationContractError as EvaluationContr
 from vlm_innovation.validate_label_export import audit_export  # noqa: E402
 from vlm_innovation.import_authorized_bundle import import_bundle  # noqa: E402
 from vlm_innovation.experts import AsrSemanticExpert, CrossModalConsistencyExpert, OcrScreenTextExpert  # noqa: E402
+from vlm_innovation.router_features import FEATURE_NAMES as ROUTER_FEATURE_NAMES, RuntimeSignals, vector_from_experts  # noqa: E402
 
 
 HASH = "a" * 64
@@ -145,6 +146,12 @@ class VlmInnovationTests(unittest.TestCase):
         self.assertGreater(ocr["ui_like_detection_ratio"], 0.0)
         self.assertIn("boundary", cross)
         self.assertNotIn("interest", str(cross).lower())
+
+    def test_router_vector_marks_absent_runtime_values_unavailable(self) -> None:
+        row = {"record_id": "r", "source_video_group": "g", "split": "train", "window_id": "w", "experts": {"visual_scene": {"available": True, "content_change": 0.2}, "ocr_screen_text": {"detections": 5, "ui_like_detection_ratio": 0.2}, "asr_semantic": {"text_available": False, "timestamped_segment_ratio": 0.0}, "ui_noise": {"ui_interference_available": True, "ui_interference_estimate": 0.2}, "cross_modal_consistency": {"has_cross_modal_evidence": False}}}
+        vector = vector_from_experts(row, RuntimeSignals())
+        self.assertEqual(len(ROUTER_FEATURE_NAMES), len(vector["features"]))
+        self.assertEqual(0.0, vector["features"][ROUTER_FEATURE_NAMES.index("queue_pressure_available")])
 
 
 if __name__ == "__main__":
