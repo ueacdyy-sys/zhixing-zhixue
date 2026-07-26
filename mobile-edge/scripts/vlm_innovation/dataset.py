@@ -193,6 +193,8 @@ def build_evidence_index(dataset_root: Path) -> list[dict[str, Any]]:
                 "window_id": record["window_id"],
                 "media": record["video"],
                 "media_sha256": media_hash,
+                "source_video_hash": record.get("verified_source_video_hash"),
+                "source_video_hash_available": isinstance(record.get("verified_source_video_hash"), str) and len(str(record.get("verified_source_video_hash"))) == 64,
                 "start_pts_ns": start,
                 "end_pts_ns": end,
                 "evidence": {

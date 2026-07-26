@@ -134,6 +134,8 @@ class VlmInnovationTests(unittest.TestCase):
             record = json.loads((destination / "manifest.jsonl").read_text(encoding="utf-8"))
             self.assertEqual("c" * 64, record["verified_source_video_hash"])
             self.assertEqual("PENDING_LABEL_STUDIO_V2_HUMAN_REVIEW", record["annotation_state"])
+            index = json.loads((destination / "evidence_index.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual("c" * 64, index["source_video_hash"])
 
 
 if __name__ == "__main__":
