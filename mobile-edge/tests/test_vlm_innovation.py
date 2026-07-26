@@ -19,6 +19,7 @@ from vlm_innovation.smolvlm_visual_cache import SmolVlmVisualTokenAdapter  # noq
 from vlm_innovation.evaluation import InnovationContractError as EvaluationContractError, Prediction, Variant, evaluate  # noqa: E402
 from vlm_innovation.validate_label_export import audit_export  # noqa: E402
 from vlm_innovation.import_authorized_bundle import import_bundle  # noqa: E402
+from vlm_innovation.experts import AsrSemanticExpert, CrossModalConsistencyExpert, OcrScreenTextExpert  # noqa: E402
 
 
 HASH = "a" * 64
@@ -136,6 +137,14 @@ class VlmInnovationTests(unittest.TestCase):
             self.assertEqual("PENDING_LABEL_STUDIO_V2_HUMAN_REVIEW", record["annotation_state"])
             index = json.loads((destination / "evidence_index.jsonl").read_text(encoding="utf-8"))
             self.assertEqual("c" * 64, index["source_video_hash"])
+
+    def test_text_and_cross_modal_experts_do_not_treat_ui_as_final_content(self) -> None:
+        ocr = OcrScreenTextExpert().evaluate({"result": {"samples": [{"raw": [[[[0, 0], [10, 0], [10, 10]], "关注", 0.9], [[[10, 100], [20, 100], [20, 110]], "线性代数", 0.9]]}]}}, width=100, height=200)
+        asr = AsrSemanticExpert().evaluate({"result": {"segments": [{"text": "线性代数的矩阵"}]}})
+        cross = CrossModalConsistencyExpert().evaluate(ocr=ocr, asr=asr, visual={"raw_vlm_observation": "A matrix is displayed."})
+        self.assertGreater(ocr["ui_like_detection_ratio"], 0.0)
+        self.assertIn("boundary", cross)
+        self.assertNotIn("interest", str(cross).lower())
 
 
 if __name__ == "__main__":
