@@ -1459,20 +1459,23 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
         } else if (!streaming && activePcCaptureSessionId != null) {
             val sessionId = activePcCaptureSessionId ?: return@LaunchedEffect
             runCatching { pcDelivery.stopCaptureSession(sessionId) }
-            pcCaptureSessions.clear(sessionId)
+            // Keep the id until the PC supervisor reaches a terminal state.
+            // Clearing it here cancels the status poll and leaves the visible
+            // connection page stuck on the transient “正在收尾” label forever.
             pcCaptureStatus = "手机流已停止，PC 正在收尾当前证据窗口"
         } else if (streaming && currentRtspSettings.mode != RtspSettings.Values.Mode.SERVER) {
             pcCaptureStatus = "PC 自动分析要求“服务端”模式；当前客户端模式没有 PC 接收端"
         }
     }
     // The capture start response is not a durable health signal.  Poll the
-    // paired PC while this screen stream remains active so a worker crash,
-    // invalid runtime configuration, or a completed tail is visible to the
-    // learner instead of leaving a permanently optimistic status label.
+    // paired PC through both streaming and tail settlement.  A capture is not
+    // complete when MediaProjection stops: the PC must first seal and fuse the
+    // final window, then report its terminal state back to this page.
     LaunchedEffect(activePcCaptureSessionId, paired, streaming) {
         val sessionId = activePcCaptureSessionId ?: return@LaunchedEffect
-        if (!paired || !streaming) return@LaunchedEffect
-        while (true) {
+        if (!paired) return@LaunchedEffect
+        var terminal = false
+        while (!terminal) {
             runCatching { pcDelivery.captureSessionStatus(sessionId) }
                 .onSuccess { session ->
                     pcCaptureStatus = describePcCaptureSession(session)
@@ -1480,20 +1483,29 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
                     // recording indefinitely while the page still says
                     // "传输中".  The learner can start a fresh, paired run
                     // after the visible error has been corrected.
-                    if (session.state.startsWith("FAILED")) {
+                    if (session.state.startsWith("FAILED") && streaming) {
                         facade?.stopUserCapture()
+                    }
+                    if (isTerminalPcCaptureSession(session.state)) {
+                        terminal = true
+                        pcCaptureSessions.clear(sessionId)
                     }
                 }
                 .onFailure { error ->
                     if (error.message == "pc_delivery_http_404") {
                         pcCaptureSessions.clear(sessionId)
-                        pcCaptureRecoveryEpoch += 1
-                        pcCaptureStatus = "PC 服务已重启，正在重新建立分析会话…"
+                        terminal = true
+                        if (streaming) {
+                            pcCaptureRecoveryEpoch += 1
+                            pcCaptureStatus = "PC 服务已重启，正在重新建立分析会话…"
+                        } else {
+                            pcCaptureStatus = "PC 会话已结束，未返回最终状态"
+                        }
                     } else {
                         pcCaptureStatus = "PC 状态暂时不可达：${error.message?.take(100) ?: "连接失败"}"
                     }
                 }
-            delay(PC_CAPTURE_STATUS_POLL_INTERVAL_MS)
+            if (!terminal) delay(PC_CAPTURE_STATUS_POLL_INTERVAL_MS)
         }
     }
     LaunchedEffect(paired) {
@@ -1626,6 +1638,9 @@ private fun describePcCaptureSession(session: PcCaptureSession): String = when (
     "FAILED" -> "PC 分析已停止：${session.error ?: "Worker 异常退出"}"
     else -> "PC 会话状态：${session.state}${session.error?.let { " · $it" } ?: ""}"
 }
+
+private fun isTerminalPcCaptureSession(state: String): Boolean =
+    state == "STOPPED" || state == "COMPLETED" || state.startsWith("FAILED")
 
 @Composable
 private fun V5FullKnowledgeCanvas(
