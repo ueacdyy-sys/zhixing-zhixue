@@ -300,6 +300,22 @@ def run_worker(
             ledger.recover_expired_leases(now_ns=now_ns)
             lease = ledger.claim(lane, worker_id, now_ns=now_ns, lease_ns=90_000_000_000)
             if lease is None:
+                # The last lane to finish a window may race the other two
+                # lanes.  Run the idempotent fusion pass while idle as well,
+                # otherwise completed evidence can remain unfused until a
+                # later fragment arrives.
+                fused = ledger.fuse_ready(now_ns=now_ns)
+                if fused:
+                    try:
+                        from .candidate_card_projection import project_candidate_cards
+
+                        project_candidate_cards(
+                            ledger_path=ledger_path,
+                            artifact_root=artifact_root,
+                            output_path=artifact_root / "candidate_cards.v1.json",
+                        )
+                    except Exception as projection_error:
+                        _record_candidate_projection_error(artifact_root, projection_error)
                 if max_idle_seconds and time.monotonic() - idle_started >= max_idle_seconds:
                     return 0
                 time.sleep(0.05)

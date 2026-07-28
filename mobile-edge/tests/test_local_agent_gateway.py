@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
+import sqlite3
+from contextlib import closing
 import hashlib
 import asyncio
 import json
@@ -9,7 +12,7 @@ from unittest.mock import patch
 import httpx
 from fastapi.testclient import TestClient
 
-from scripts.local_agent_gateway import AgentProviderError, AgentRunRequest, GatewaySettings, ask_openai_compatible, build_app, probe_selected_provider
+from scripts.local_agent_gateway import AgentProviderError, AgentRunRequest, CaptureSession, GatewaySettings, LanCaptureSupervisor, ask_openai_compatible, build_app, probe_selected_provider
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -27,6 +30,54 @@ def pair(client: TestClient) -> str:
 
 def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+class _CaptureProcess:
+    def __init__(self, exit_code: int | None, final_code: int = 0) -> None:
+        self.exit_code = exit_code
+        self.final_code = final_code
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+    def wait(self) -> int:
+        return self.final_code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.exit_code = self.final_code
+
+
+def test_capture_supervisor_requires_all_worker_ready_receipts(tmp_path: Path) -> None:
+    settings = GatewaySettings("pair-code", None, None, tmp_path, "ingress-key")
+    supervisor = LanCaptureSupervisor(settings)
+    session = CaptureSession("capture-1", "phone-1", "rtsp://127.0.0.1:8554/live", tmp_path / "session", "STARTING", "now")
+    session.process = _CaptureProcess(exit_code=3, final_code=3)  # type: ignore[assignment]
+    supervisor._sessions[("phone-1", "capture-1")] = session
+
+    supervisor._watch(("phone-1", "capture-1"))
+
+    assert session.state == "FAILED_RUNTIME_NOT_READY"
+    assert session.error == "worker_exited_before_ready"
+
+
+def test_capture_supervisor_marks_running_only_after_all_ready_receipts(tmp_path: Path) -> None:
+    settings = GatewaySettings("pair-code", None, None, tmp_path, "ingress-key")
+    supervisor = LanCaptureSupervisor(settings)
+    output = tmp_path / "session"
+    artifacts = output / "artifacts"
+    artifacts.mkdir(parents=True)
+    for lane in ("ocr", "asr", "vlm"):
+        (artifacts / f"{lane}-e2e.ready.json").write_text("{}", encoding="utf-8")
+    session = CaptureSession("capture-2", "phone-1", "rtsp://127.0.0.1:8554/live", output, "STARTING", "now")
+    session.process = _CaptureProcess(exit_code=None, final_code=0)  # type: ignore[assignment]
+    supervisor._sessions[("phone-1", "capture-2")] = session
+
+    supervisor._watch(("phone-1", "capture-2"))
+
+    assert session.state == "COMPLETED"
+    assert session.error is None
 
 
 def test_paired_phone_sees_explicit_provider_unavailable_status(tmp_path: Path) -> None:
@@ -100,6 +151,38 @@ def test_pairing_code_is_rate_limited_after_repeated_failures(tmp_path: Path) ->
         json={"device_id": "phone-rate", "pairing_token": "pair-code"},
     )
     assert rate_limited.status_code == 429
+
+
+def test_pairing_creates_a_long_lived_but_revocable_device_credential(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    paired = client.post(
+        "/api/mobile-outbox/devices/pair",
+        json={"device_id": "phone-long-lived", "pairing_token": "pair-code"},
+    )
+
+    assert paired.status_code == 200
+    expires_at = datetime.fromisoformat(paired.json()["expires_at"])
+    assert (expires_at - datetime.now(timezone.utc)).days >= 364
+
+
+def test_existing_unrevoked_short_lived_pairing_is_migrated_without_manual_repair(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    paired = client.post(
+        "/api/mobile-outbox/devices/pair",
+        json={"device_id": "phone-migrate", "pairing_token": "pair-code"},
+    )
+    token = paired.json()["access_token"]
+    with closing(sqlite3.connect(tmp_path / "gateway.sqlite3")) as connection:
+        connection.execute("UPDATE devices SET token_expires_at=? WHERE device_id=?", ("2000-01-01T00:00:00+00:00", "phone-migrate"))
+        connection.commit()
+
+    resumed = make_client(tmp_path).get("/api/mobile-outbox/messages?device_id=phone-migrate", headers=headers(token))
+
+    assert resumed.status_code == 200
+    with closing(sqlite3.connect(tmp_path / "gateway.sqlite3")) as connection:
+        renewed = connection.execute("SELECT token_expires_at FROM devices WHERE device_id=?", ("phone-migrate",)).fetchone()[0]
+    assert (datetime.fromisoformat(renewed) - datetime.now(timezone.utc)).days >= 364
 
 
 def test_analysis_worker_can_enqueue_once_and_paired_phone_can_ack(tmp_path: Path) -> None:

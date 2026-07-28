@@ -44,7 +44,12 @@ MAX_GRAPH_EVENT_PAYLOAD_BYTES = 48 * 1024
 MAX_GRAPH_EVENTS_PER_REQUEST = 50
 DEFAULT_MESSAGE_TTL_SECONDS = 300
 DELIVERY_LEASE_SECONDS = 30
-TOKEN_TTL_SECONDS = 8 * 60 * 60
+# This is a user-approved, TLS-pinned device pairing credential rather than a
+# browser login session.  An eight-hour expiry made a phone silently lose its
+# automatic PC connection after an overnight pause and forced needless manual
+# re-pairing.  Revocation remains immediate; planned annual renewal prevents a
+# forgotten local credential from living forever.
+PAIRING_CREDENTIAL_TTL_SECONDS = 365 * 24 * 60 * 60
 PAIRING_ATTEMPT_WINDOW_SECONDS = 5 * 60
 PAIRING_ATTEMPT_LIMIT = 5
 NEARBY_PAIRING_WINDOW_SECONDS = 120
@@ -337,16 +342,34 @@ class LanCaptureSupervisor:
             process = session.process if session is not None else None
         if session is None or process is None:
             return
-        # Popen success does not prove OCR/ASR/VLM readiness.  Keep the API in
-        # STARTING until the runner survives its own preflight/worker warmup.
-        time.sleep(2.0)
-        with self._lock:
-            if process.poll() is None and session.state == "STARTING":
-                session.state = "RUNNING"
+        # Popen success does not prove OCR/ASR/VLM readiness.  The runner's
+        # actual contract is one receipt per lane; keep the API in STARTING
+        # until all three receipts exist instead of advertising a worker after
+        # an arbitrary two-second delay.
+        ready_dir = session.output_dir / "artifacts"
+        expected_receipts = tuple(ready_dir / f"{lane}-e2e.ready.json" for lane in ("ocr", "asr", "vlm"))
+        readiness_deadline = time.monotonic() + 120.0
+        workers_ready = False
+        while process.poll() is None and time.monotonic() < readiness_deadline:
+            if all(receipt.is_file() for receipt in expected_receipts):
+                workers_ready = True
+                with self._lock:
+                    if session.state == "STARTING":
+                        session.state = "RUNNING"
+                break
+            time.sleep(0.25)
+        if not workers_ready:
+            with self._lock:
+                session.state = "FAILED_RUNTIME_NOT_READY"
+                session.error = "worker_ready_timeout" if process.poll() is None else "worker_exited_before_ready"
+            if process.poll() is None:
+                process.terminate()
         code = process.wait()
         with self._lock:
             if session.state == "STOPPING":
                 session.state = "STOPPED"
+            elif session.state == "FAILED_RUNTIME_NOT_READY":
+                pass
             elif code == 0:
                 session.state = "COMPLETED"
             else:
@@ -549,17 +572,31 @@ class GatewayStore:
                    VALUES(?, ?, ?, ?, NULL)
                    ON CONFLICT(device_id) DO UPDATE SET token_hash=excluded.token_hash,
                      token_expires_at=excluded.token_expires_at, paired_at=excluded.paired_at, revoked_at=NULL""",
-                (device_id, sha256(token), iso(now + timedelta(seconds=TOKEN_TTL_SECONDS)), iso(now)),
+                (device_id, sha256(token), iso(now + timedelta(seconds=PAIRING_CREDENTIAL_TTL_SECONDS)), iso(now)),
             )
         return token
 
     def paired_device(self, token: str) -> str | None:
-        now = iso(utc_now())
-        with self._connection() as connection:
+        now_value = utc_now()
+        now = iso(now_value)
+        with self._lock, self._connection() as connection:
             rows = connection.execute(
-                "SELECT device_id, token_hash FROM devices WHERE revoked_at IS NULL AND token_expires_at > ?", (now,)
+                "SELECT device_id, token_hash, token_expires_at FROM devices WHERE revoked_at IS NULL"
             ).fetchall()
-        return next((row["device_id"] for row in rows if hmac.compare_digest(row["token_hash"], sha256(token))), None)
+            for row in rows:
+                if not hmac.compare_digest(row["token_hash"], sha256(token)):
+                    continue
+                # Upgrade valid historic short-lived pairings in place.  This
+                # path is reachable only by possession of the existing secret
+                # over the already pinned TLS channel; revoked devices never
+                # enter this query.
+                if parse_time(str(row["token_expires_at"])) <= now_value:
+                    connection.execute(
+                        "UPDATE devices SET token_expires_at=? WHERE device_id=? AND revoked_at IS NULL",
+                        (iso(now_value + timedelta(seconds=PAIRING_CREDENTIAL_TTL_SECONDS)), row["device_id"]),
+                    )
+                return str(row["device_id"])
+        return None
 
     def revoke(self, device_id: str) -> None:
         with self._lock, self._connection() as connection:
@@ -849,7 +886,7 @@ def build_app(settings: GatewaySettings) -> FastAPI:
             raise HTTPException(403, detail={"code": "pairing_code_invalid"})
         pairing_limiter.clear(rate_key)
         token = store.pair(request.device_id)
-        return {"device_id": request.device_id, "access_token": token, "expires_at": iso(utc_now() + timedelta(seconds=TOKEN_TTL_SECONDS))}
+        return {"device_id": request.device_id, "access_token": token, "expires_at": iso(utc_now() + timedelta(seconds=PAIRING_CREDENTIAL_TTL_SECONDS))}
 
     @app.delete("/api/mobile-outbox/devices/me", status_code=204)
     async def revoke_current_device(device_id: str = Depends(require_pairing)) -> Response:

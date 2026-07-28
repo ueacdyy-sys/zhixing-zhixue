@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -96,6 +97,7 @@ import cn.zhixingzhixue.learning.domain.KnowledgeGraphReviewStatus
 import cn.zhixingzhixue.learning.domain.KnowledgeRelationship
 import cn.zhixingzhixue.learning.domain.StudentKnowledgeEdgeDraft
 import cn.zhixingzhixue.learning.domain.StudentKnowledgeNodeDraft
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -341,6 +343,7 @@ public fun V5NativeApp(
             )
             V5Route.MEDIA -> V5MediaControlsPage(
                 section = secondarySubject.ifBlank { null },
+                pcPaired = pcLink != null,
                 onBack = if (settingsSection != null) returnToSettingsDrawer else goBack,
             )
             V5Route.AGENT_CONFIG -> V5AgentServicePage(
@@ -1394,6 +1397,7 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     val scope = rememberCoroutineScope()
     val pcDelivery = remember { MobileAppServices.pcDeliveryClient(context) }
     val pcLinkStore = remember { MobileAppServices.pcLinkStore(context) }
+    val pcCaptureSessions = remember { MobileAppServices.pcCaptureSessionCoordinator(context) }
     var paired by rememberSaveable { mutableStateOf(pcPaired || pcLinkStore.read() != null) }
     var pairingDialogOpen by rememberSaveable { mutableStateOf(false) }
     var pairingAddress by rememberSaveable { mutableStateOf("") }
@@ -1402,8 +1406,11 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     var discoveredCandidates by remember { mutableStateOf<List<LanGatewayCandidate>>(emptyList()) }
     var discoveryDialogOpen by rememberSaveable { mutableStateOf(false) }
     var discoveryInProgress by rememberSaveable { mutableStateOf(false) }
-    var activePcCaptureSessionId by rememberSaveable { mutableStateOf<String?>(null) }
+    val activePcCaptureSessionId by pcCaptureSessions.activeSessionId.collectAsState()
     var pcCaptureStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    // Bump only after an explicit 404: the paired PC process has forgotten
+    // its in-memory session and the still-live RTSP stream needs one rebuild.
+    var pcCaptureRecoveryEpoch by rememberSaveable { mutableIntStateOf(0) }
     val lanDiscovery = remember { LanGatewayDiscovery() }
     val facade = rememberStartedRtspFacade()
     val fallback = remember { MutableStateFlow(RtspTransportSnapshot(RtspTransportStatus.IDLE, 0, null, false, null)) }
@@ -1428,27 +1435,65 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     // This is the application-level hand-off missing from the former flow:
     // MediaProjection -> Android RTSP SERVER -> authenticated PC supervisor.
     // It runs only after STREAMING is factual, never merely after tapping 开始.
-    LaunchedEffect(streaming, paired, currentRtspSettings.mode, currentRtspSettings.serverPort, currentRtspSettings.serverPath) {
+    LaunchedEffect(streaming, paired, currentRtspSettings.mode, currentRtspSettings.serverPort, currentRtspSettings.serverPath, pcCaptureRecoveryEpoch) {
         if (streaming && paired && currentRtspSettings.mode == RtspSettings.Values.Mode.SERVER && activePcCaptureSessionId == null) {
-            val sessionId = "phone-" + UUID.randomUUID()
-            pcCaptureStatus = "正在通知 PC 捕获屏幕流…"
-            runCatching { pcDelivery.startCaptureSession(sessionId, currentRtspSettings.serverPort, currentRtspSettings.serverPath) }
-                .onSuccess { session ->
-                    activePcCaptureSessionId = session.sessionId
-                    pcCaptureStatus = when (session.state) {
-                        "RUNNING" -> "PC 已接收，正在分析"
-                        "STARTING" -> "PC 已接收，正在启动分析"
-                        else -> "PC 分析未启动：${session.error ?: session.state}"
+            var retry = 0
+            var startedSessionId: String? = null
+            while (startedSessionId == null && retry < PC_CAPTURE_START_MAX_ATTEMPTS) {
+                val sessionId = "phone-" + UUID.randomUUID()
+                pcCaptureStatus = if (retry == 0) "正在通知 PC 捕获屏幕流…" else "PC 连接重试中（${retry + 1}/$PC_CAPTURE_START_MAX_ATTEMPTS）…"
+                runCatching { pcDelivery.startCaptureSession(sessionId, currentRtspSettings.serverPort, currentRtspSettings.serverPath) }
+                    .onSuccess { session ->
+                        pcCaptureSessions.activate(session.sessionId)
+                        startedSessionId = session.sessionId
+                        pcCaptureStatus = describePcCaptureSession(session)
                     }
+                    .onFailure { error ->
+                        retry += 1
+                        pcCaptureStatus = "PC 捕获未启动：${error.message?.take(100) ?: "连接失败"}"
+                    }
+                if (activePcCaptureSessionId == null && retry < PC_CAPTURE_START_MAX_ATTEMPTS) {
+                    delay(PC_CAPTURE_START_RETRY_DELAY_MS * retry)
                 }
-                .onFailure { error -> pcCaptureStatus = "PC 捕获未启动：${error.message?.take(100) ?: "连接失败"}" }
+            }
         } else if (!streaming && activePcCaptureSessionId != null) {
             val sessionId = activePcCaptureSessionId ?: return@LaunchedEffect
             runCatching { pcDelivery.stopCaptureSession(sessionId) }
-            activePcCaptureSessionId = null
+            pcCaptureSessions.clear(sessionId)
             pcCaptureStatus = "手机流已停止，PC 正在收尾当前证据窗口"
         } else if (streaming && currentRtspSettings.mode != RtspSettings.Values.Mode.SERVER) {
             pcCaptureStatus = "PC 自动分析要求“服务端”模式；当前客户端模式没有 PC 接收端"
+        }
+    }
+    // The capture start response is not a durable health signal.  Poll the
+    // paired PC while this screen stream remains active so a worker crash,
+    // invalid runtime configuration, or a completed tail is visible to the
+    // learner instead of leaving a permanently optimistic status label.
+    LaunchedEffect(activePcCaptureSessionId, paired, streaming) {
+        val sessionId = activePcCaptureSessionId ?: return@LaunchedEffect
+        if (!paired || !streaming) return@LaunchedEffect
+        while (true) {
+            runCatching { pcDelivery.captureSessionStatus(sessionId) }
+                .onSuccess { session ->
+                    pcCaptureStatus = describePcCaptureSession(session)
+                    // A failed PC worker must not leave MediaProjection
+                    // recording indefinitely while the page still says
+                    // "传输中".  The learner can start a fresh, paired run
+                    // after the visible error has been corrected.
+                    if (session.state.startsWith("FAILED")) {
+                        facade?.stopUserCapture()
+                    }
+                }
+                .onFailure { error ->
+                    if (error.message == "pc_delivery_http_404") {
+                        pcCaptureSessions.clear(sessionId)
+                        pcCaptureRecoveryEpoch += 1
+                        pcCaptureStatus = "PC 服务已重启，正在重新建立分析会话…"
+                    } else {
+                        pcCaptureStatus = "PC 状态暂时不可达：${error.message?.take(100) ?: "连接失败"}"
+                    }
+                }
+            delay(PC_CAPTURE_STATUS_POLL_INTERVAL_MS)
         }
     }
     LaunchedEffect(paired) {
@@ -1566,6 +1611,22 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     )
 }
 
+private const val PC_CAPTURE_STATUS_POLL_INTERVAL_MS: Long = 5_000
+private const val PC_CAPTURE_START_MAX_ATTEMPTS = 4
+private const val PC_CAPTURE_START_RETRY_DELAY_MS = 1_500L
+
+private fun describePcCaptureSession(session: PcCaptureSession): String = when (session.state) {
+    "STARTING" -> "PC 已接收，正在启动分析"
+    "RUNNING" -> "PC 已接收，正在分析"
+    "STOPPING" -> "手机流已停止，PC 正在收尾当前证据窗口"
+    "STOPPED" -> "PC 已完成当前证据窗口收尾"
+    "COMPLETED" -> "PC 已完成当前分析会话"
+    "FAILED_CONFIGURATION" -> "PC 分析未启动：${session.error ?: "网关配置不完整"}"
+    "FAILED_RUNTIME_NOT_READY" -> "PC 分析未启动：${session.error ?: "运行时未就绪"}"
+    "FAILED" -> "PC 分析已停止：${session.error ?: "Worker 异常退出"}"
+    else -> "PC 会话状态：${session.state}${session.error?.let { " · $it" } ?: ""}"
+}
+
 @Composable
 private fun V5FullKnowledgeCanvas(
     title: String,
@@ -1665,7 +1726,7 @@ private fun V5SettingsPage(
 }
 
 @Composable
-private fun V5MediaControlsPage(section: String?, onBack: () -> Unit) {
+private fun V5MediaControlsPage(section: String?, pcPaired: Boolean, onBack: () -> Unit) {
     val facade = rememberStartedRtspFacade()
     val fallback = remember { MutableStateFlow(RtspTransportSnapshot(RtspTransportStatus.IDLE, 0, null, false, null)) }
     val transport by (facade?.state ?: fallback).collectAsState()
@@ -1709,7 +1770,12 @@ private fun V5MediaControlsPage(section: String?, onBack: () -> Unit) {
         }
         if (showNetwork) V5Panel(modifier = Modifier.padding(top = 10.dp)) {
             Text("传输与服务端", color = NativeV5Tokens.Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, fontFamily = NativeV5Tokens.Font)
-            V5Segmented(listOf("服务端", "客户端"), if (settings.mode == RtspSettings.Values.Mode.SERVER) 0 else 1) { updateSettings { copy(mode = if (it == 0) RtspSettings.Values.Mode.SERVER else RtspSettings.Values.Mode.CLIENT) } }
+            V5Segmented(
+                items = listOf("服务端", "客户端"),
+                selected = if (settings.mode == RtspSettings.Values.Mode.SERVER) 0 else 1,
+                enabled = { index -> !pcPaired || index == 0 },
+            ) { updateSettings { copy(mode = if (it == 0) RtspSettings.Values.Mode.SERVER else RtspSettings.Values.Mode.CLIENT) } }
+            if (pcPaired) Text("已配对本地 PC 时固定由手机提供服务端流。", color = NativeV5Tokens.Muted, fontSize = 10.sp, lineHeight = 14.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 4.dp))
             if (settings.mode == RtspSettings.Values.Mode.SERVER) {
                 V5SettingsTextInput("服务端端口", serverPortDraft, "8554", Modifier.padding(top = 10.dp), onValueChange = { serverPortDraft = it }, onApply = { serverPortDraft.toIntOrNull()?.takeIf { it in 1..65535 }?.let { port -> updateSettings { copy(serverPort = port) } } })
                 V5SettingsTextInput("RTSP 路径", serverPathDraft, "screen", onValueChange = { serverPathDraft = it }, onApply = { if (serverPathDraft.isNotBlank()) updateSettings { copy(serverPath = serverPathDraft.trim()) } })
@@ -2218,7 +2284,7 @@ private fun V5IconAction(icon: V5Icon, contentDescription: String, onClick: () -
 private fun V5PrimaryButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) { Surface(modifier = modifier.height(36.dp).clip(RoundedCornerShape(10.dp)).clickable(enabled = enabled, onClick = onClick), shape = RoundedCornerShape(10.dp), color = if (enabled) NativeV5Tokens.Accent else NativeV5Tokens.Quiet) { Box(contentAlignment = Alignment.Center) { Text(label, color = if (enabled) Color.White else NativeV5Tokens.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = NativeV5Tokens.Font, maxLines = 1, overflow = TextOverflow.Ellipsis) } } }
 
 @Composable
-private fun V5Segmented(items: List<String>, selected: Int, compact: Boolean = false, onSelect: (Int) -> Unit) { Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFFEFF2F5)).padding(3.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) { items.forEachIndexed { index, item -> val active = index == selected; TextButton(onClick = { onSelect(index) }, modifier = Modifier.weight(1f).height(if (compact) 36.dp else 32.dp), shape = RoundedCornerShape(8.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text(item, color = if (active) NativeV5Tokens.Accent else NativeV5Tokens.Muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, fontFamily = NativeV5Tokens.Font) } } }
+private fun V5Segmented(items: List<String>, selected: Int, compact: Boolean = false, enabled: (Int) -> Boolean = { true }, onSelect: (Int) -> Unit) { Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFFEFF2F5)).padding(3.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) { items.forEachIndexed { index, item -> val active = index == selected; TextButton(onClick = { onSelect(index) }, enabled = enabled(index), modifier = Modifier.weight(1f).height(if (compact) 36.dp else 32.dp), shape = RoundedCornerShape(8.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text(item, color = if (active) NativeV5Tokens.Accent else NativeV5Tokens.Muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, fontFamily = NativeV5Tokens.Font) } } }
 }
 
 @Composable

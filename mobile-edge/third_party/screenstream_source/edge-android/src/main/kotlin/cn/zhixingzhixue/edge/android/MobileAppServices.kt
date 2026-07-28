@@ -28,6 +28,7 @@ public object MobileAppServices {
     private lateinit var pcInboxValue: AndroidPcResultInbox
     private lateinit var pcCandidateInboxValue: PcCandidateCardInbox
     private lateinit var pcDeliveryClientValue: PcDeliveryClient
+    private lateinit var pcCaptureSessionCoordinatorValue: PcCaptureSessionCoordinator
 
     public fun initialize(context: Context) {
         if (initialized) return
@@ -51,6 +52,7 @@ public object MobileAppServices {
             pcCandidateInboxValue = PcCandidateCardInbox(candidateStoreValue, AndroidStudentNotice(appContext))
             knowledgeGraphSyncClientValue = PcKnowledgeGraphSyncClient(pcLinkStoreValue, knowledgeGraphEventStoreValue, pcInboxValue)
             pcDeliveryClientValue = PcDeliveryClient(pcLinkStoreValue, pcInboxValue, pcCandidateInboxValue, knowledgeGraphSyncClientValue)
+            pcCaptureSessionCoordinatorValue = PcCaptureSessionCoordinator()
             initialized = true
         }
     }
@@ -108,5 +110,10 @@ public object MobileAppServices {
     public fun pcDeliveryClient(context: Context): PcDeliveryClient {
         initialize(context)
         return pcDeliveryClientValue
+    }
+
+    public fun pcCaptureSessionCoordinator(context: Context): PcCaptureSessionCoordinator {
+        initialize(context)
+        return pcCaptureSessionCoordinatorValue
     }
 }

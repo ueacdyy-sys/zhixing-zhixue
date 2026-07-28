@@ -9,6 +9,7 @@ records whether windows fuse *before* the live input ends.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import os
 import sqlite3
@@ -103,11 +104,28 @@ def _await_readiness(processes: dict[str, subprocess.Popen[str]], artifact_root:
 
 
 def _counts(ledger: Path) -> dict[str, int]:
-    with sqlite3.connect(ledger) as connection:
+    # A transaction context alone keeps the SQLite handle open on Windows.
+    # The settlement loop polls repeatedly, so each snapshot must release its
+    # handle before the next worker or cleanup action touches the ledger.
+    with closing(sqlite3.connect(ledger)) as connection:
         total = connection.execute("select count(1) from semantic_windows").fetchone()[0]
+        # An explicitly incomplete window is durable evidence of a gap, not a
+        # candidate eligible for tri-modal fusion.  It must remain visible in
+        # the final receipt, but it must not make the settlement loop wait for
+        # an impossible fused_at_ns value forever.
+        fusion_eligible = connection.execute(
+            "select count(1) from semantic_windows where fusion_mode != 'EVIDENCE_INCOMPLETE'"
+        ).fetchone()[0]
+        incomplete = total - fusion_eligible
         fused = connection.execute("select count(1) from semantic_windows where fused_at_ns is not null").fetchone()[0]
         unresolved = connection.execute("select count(1) from jobs where state='UNRESOLVED'").fetchone()[0]
-    return {"windows": total, "fused": fused, "unresolved_jobs": unresolved}
+    return {
+        "windows": total,
+        "fusion_eligible_windows": fusion_eligible,
+        "evidence_incomplete_windows": incomplete,
+        "fused": fused,
+        "unresolved_jobs": unresolved,
+    }
 
 
 def _terminate(processes: list[subprocess.Popen[str]]) -> None:
@@ -150,9 +168,17 @@ def main() -> int:
     parser.add_argument("--enable-candidate-notifications", action="store_true")
     parser.add_argument("--pc-outbox-gateway", default=None, help="Paired-PC local hub URL for formal candidate delivery.")
     parser.add_argument("--pc-outbox-device-id", default=None)
+    parser.add_argument(
+        "--settle-timeout-seconds",
+        type=float,
+        default=0.0,
+        help="0 drains every sealed window before exit; positive values are acceptance-test limits only.",
+    )
     args = parser.parse_args()
     if args.duration_seconds < 0:
         raise SystemExit("duration must be non-negative")
+    if args.settle_timeout_seconds < 0:
+        raise SystemExit("settle_timeout_seconds_must_be_non_negative")
     if args.fragments_per_window < 1 or args.window_hop_fragments < 1:
         raise SystemExit("window_fragment_counts_must_be_positive")
     if bool(args.pc_outbox_gateway) != bool(args.pc_outbox_device_id):
@@ -244,18 +270,31 @@ def main() -> int:
         if ingress.returncode != 0:
             raise RuntimeError(f"ingress_failed_exit_{ingress.returncode}")
 
-        settle_deadline = time.monotonic() + 90.0
-        while time.monotonic() < settle_deadline:
+        # A received, sealed fragment is durable evidence.  Do not silently
+        # discard its queued OCR/ASR/VLM work after an arbitrary 90 seconds.
+        # Production therefore drains to completion; bounded settlement is
+        # available only as an explicitly requested acceptance-test limit.
+        settle_deadline = time.monotonic() + args.settle_timeout_seconds if args.settle_timeout_seconds else None
+        while True:
             state = _counts(ledger)
             progress_file.write(json.dumps({"pc_monotonic_ns": time.monotonic_ns(), "ingress_running": False, **state}, separators=(",", ":")) + "\n")
             progress_file.flush()
-            if state["windows"] > 0 and state["fused"] == state["windows"] and state["unresolved_jobs"] == 0:
+            if (
+                state["windows"] > 0
+                and state["fused"] == state["fusion_eligible_windows"]
+                and state["unresolved_jobs"] == 0
+            ):
                 break
+            dead = [lane for lane, process in workers.items() if process.poll() is not None]
+            if dead:
+                raise RuntimeError(f"worker_died_during_settlement:{','.join(sorted(dead))}")
+            if settle_deadline is not None and time.monotonic() >= settle_deadline:
+                raise RuntimeError("acceptance_settlement_timeout")
             time.sleep(0.5)
         final = _counts(ledger)
         with sqlite3.connect(ledger) as connection:
             online_fused = connection.execute("select count(1) from semantic_windows where fused_at_ns is not null and fused_at_ns < ?", (ingress_exit_ns,)).fetchone()[0]
-        report = {"status": "OK" if final["windows"] and final["fused"] == final["windows"] and final["unresolved_jobs"] == 0 else "FAILED",
+        report = {"status": "OK" if final["windows"] and final["fused"] == final["fusion_eligible_windows"] and final["unresolved_jobs"] == 0 else "FAILED",
                   "ingress_exit_monotonic_ns": ingress_exit_ns, "online_fused_windows": online_fused, **final}
         (output / "acceptance_summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False), flush=True)

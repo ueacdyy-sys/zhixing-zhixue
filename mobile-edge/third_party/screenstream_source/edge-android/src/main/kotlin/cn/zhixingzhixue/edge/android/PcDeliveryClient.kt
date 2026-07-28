@@ -158,6 +158,20 @@ public class PcDeliveryClient(
         parseCaptureSession(request(link.baseUrl + "/api/capture-sessions/" + java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name()) + "/stop", "POST", link, "{}"))
     }
 
+    /**
+     * Reads the authoritative PC supervisor state for an active phone capture.
+     *
+     * Starting a session only proves that the PC accepted the first request.
+     * The V5 connection surface must subsequently render this state instead of
+     * retaining a stale local "analysing" label if the PC worker later fails.
+     */
+    public suspend fun captureSessionStatus(sessionId: String): PcCaptureSession = withContext(Dispatchers.IO) {
+        require(sessionId.isNotBlank()) { "capture_session_id_required" }
+        val link = linkStore.read() ?: throw IllegalStateException("pc_delivery_not_paired")
+        val encodedSessionId = java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name())
+        parseCaptureSession(request(link.baseUrl + "/api/capture-sessions/" + encodedSessionId, "GET", link, null))
+    }
+
     public suspend fun synchronizeOnce(): Int = withContext(Dispatchers.IO) {
         val link = linkStore.read() ?: return@withContext 0
         val endpoint = link.baseUrl + "/api/mobile-outbox/messages?device_id=" +

@@ -394,6 +394,7 @@ def run(
             on_fragment_committed(payload)
         published.append(payload)
 
+    transport_closed = False
     try:
         for packet in input_container.demux(source_streams):
             if packet.dts is None or packet.pts is None or packet.time_base is None:
@@ -438,6 +439,10 @@ def run(
                 sink.mux(packet, packet_pts_ns=pts_ns, packet_dts_ns=dts_ns)
             if config.duration_seconds and (arrived_ns - started_ns) >= int(config.duration_seconds * NS):
                 break
+    except av.error.ConnectionResetError:
+        # Android ends its RTSP TCP stream by closing the socket.  Seal and
+        # drain evidence already received instead of aborting all three lanes.
+        transport_closed = True
     finally:
         sealed_ns = time.monotonic_ns()
         final = fragmenter.close(end_pts_ns=last_pts_ns or 0, sealed_monotonic_ns=sealed_ns)
@@ -451,6 +456,7 @@ def run(
     report = {
         "schema_version": "realtime_fragment_worker.v1",
         "session_id": config.session_id,
+        "transport_closed": transport_closed,
         "fragment_seconds_target": config.fragment_seconds,
         "started_monotonic_ns": started_ns,
         "finished_monotonic_ns": time.monotonic_ns(),
