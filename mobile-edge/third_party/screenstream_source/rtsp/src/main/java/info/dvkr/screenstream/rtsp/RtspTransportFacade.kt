@@ -25,12 +25,100 @@ public enum class RtspTransportStatus {
     ERROR
 }
 
+/** The requested Android audio path; it is not a claim about media semantics. */
+public enum class RtspAudioCaptureMode {
+    NONE,
+    PLAYBACK,
+    MICROPHONE,
+    MIXED
+}
+
+/**
+ * Transport-level audio evidence.  ACTIVE is deliberately unverified: an
+ * app may still suppress playback capture, use DRM, or emit an unsynchronised
+ * track.  Only the later v2 AudioCapabilitySnapshot may claim same-source
+ * semantic audio after its own hashes and clock samples are present.
+ */
+public enum class RtspAudioCapabilityStatus {
+    NOT_REQUESTED,
+    CAPTURE_ACTIVE_UNVERIFIED,
+    UNRESOLVED
+}
+
+/** Encoded output copied at the codec boundary; no RTSP packet or cleartext fallback is exposed. */
+public enum class RtspEncodedTrack { VIDEO, AUDIO }
+
+/** Codec declaration for the private v2 egress; bytes alone are never guessed. */
+public enum class RtspEncodedVideoCodec { H264, H265, AV1 }
+
+public data class RtspEncodedFrame(
+    val track: RtspEncodedTrack,
+    val ptsUs: Long,
+    /** Codec callbacks expose a start PTS only; a session adapter must derive a bounded end range. */
+    val durationUs: Long?,
+    val isKeyFrame: Boolean,
+    val bytes: ByteArray,
+    /** Required for video. Audio remains unresolved until a separate capability contract verifies it. */
+    val videoCodec: RtspEncodedVideoCodec? = null,
+    /** Annex-B parameter sets copied only with an H.264 keyframe for PC-local decoding. */
+    val videoCodecConfigAnnexB: ByteArray? = null,
+)
+
+public fun interface RtspEncodedFrameSink {
+    /** The sink must return quickly and must not retain [frame.bytes] without copying. */
+    public fun onEncodedFrame(frame: RtspEncodedFrame)
+}
+
+public data class RtspAudioCapabilitySnapshot(
+    val captureMode: RtspAudioCaptureMode,
+    val status: RtspAudioCapabilityStatus,
+    val failureCode: String?
+) {
+    public companion object {
+        public fun fromRuntime(
+            microphoneRequested: Boolean,
+            devicePlaybackRequested: Boolean,
+            encoderRunning: Boolean,
+            captureDisabled: Boolean,
+            failureCode: String?
+        ): RtspAudioCapabilitySnapshot {
+            val mode = when {
+                microphoneRequested && devicePlaybackRequested -> RtspAudioCaptureMode.MIXED
+                devicePlaybackRequested -> RtspAudioCaptureMode.PLAYBACK
+                microphoneRequested -> RtspAudioCaptureMode.MICROPHONE
+                else -> RtspAudioCaptureMode.NONE
+            }
+            return when {
+                mode == RtspAudioCaptureMode.NONE -> RtspAudioCapabilitySnapshot(
+                    mode, RtspAudioCapabilityStatus.NOT_REQUESTED, null
+                )
+                captureDisabled || !failureCode.isNullOrBlank() -> RtspAudioCapabilitySnapshot(
+                    mode, RtspAudioCapabilityStatus.UNRESOLVED, failureCode ?: "audio_capture_disabled"
+                )
+                encoderRunning -> RtspAudioCapabilitySnapshot(
+                    mode, RtspAudioCapabilityStatus.CAPTURE_ACTIVE_UNVERIFIED, null
+                )
+                else -> RtspAudioCapabilitySnapshot(
+                    mode, RtspAudioCapabilityStatus.UNRESOLVED, "audio_encoder_not_running"
+                )
+            }
+        }
+    }
+}
+
 public data class RtspTransportSnapshot(
     val status: RtspTransportStatus,
     val activeConsumerCount: Int,
     val endpoint: String?,
     val deviceAudioAvailable: Boolean,
     val failureCode: String?,
+    val audioCapability: RtspAudioCapabilitySnapshot = RtspAudioCapabilitySnapshot.fromRuntime(
+        microphoneRequested = false,
+        devicePlaybackRequested = false,
+        encoderRunning = false,
+        captureDisabled = false,
+        failureCode = null
+    ),
     /** Present only while the user-authorized MediaProjection dialog is pending. */
     val startAttemptId: String? = null,
     val timing: RtspTransportTimingSnapshot? = null
@@ -106,20 +194,35 @@ public class RtspTransportFacade(private val module: RtspStreamingModule) {
                 endpoint = source.serverBindings.firstOrNull()?.fullAddress,
                 deviceAudioAvailable = source.selectedAudioEncoder != null,
                 failureCode = source.error?.javaClass?.simpleName,
+                audioCapability = RtspAudioCapabilitySnapshot.fromRuntime(
+                    microphoneRequested = source.microphoneAudioRequested,
+                    devicePlaybackRequested = source.devicePlaybackAudioRequested,
+                    encoderRunning = source.isStreaming && source.selectedAudioEncoder != null && !source.audioCaptureDisabled,
+                    captureDisabled = source.audioCaptureDisabled,
+                    failureCode = source.audioCaptureFailureCode,
+                ),
                 startAttemptId = source.startAttemptId,
-                timing = MasterClock.snapshot().let { clock ->
-                    RtspTransportTimingSnapshot(
-                        sessionEpochId = clock.sessionEpochId,
-                        anchorElapsedRealtimeNs = clock.anchorElapsedRealtimeNs,
-                        anchorWallClockMs = clock.anchorWallClockMs,
-                        latestVideoPtsUs = clock.latestVideoPtsUs,
-                        latestAudioPtsUs = clock.latestAudioPtsUs,
-                        lastMediaEmitElapsedRealtimeNs = clock.lastMediaEmitElapsedRealtimeNs
-                    )
-                }.takeIf { source.isStreaming }
+                timing = currentTimingSnapshot().takeIf { source.isStreaming }
             )
         }
         .stateIn(scope, SharingStarted.Eagerly, RtspTransportSnapshot(RtspTransportStatus.IDLE, 0, null, false, null))
+
+    /**
+     * Reads the current RTSP master clock without controlling the transport.
+     * A consumer that polls a StateFlow must use this instead of treating a
+     * previous status emission as a fresh media timestamp.
+     */
+    public fun currentTimingSnapshot(): RtspTransportTimingSnapshot {
+        val clock = MasterClock.snapshot()
+        return RtspTransportTimingSnapshot(
+            sessionEpochId = clock.sessionEpochId,
+            anchorElapsedRealtimeNs = clock.anchorElapsedRealtimeNs,
+            anchorWallClockMs = clock.anchorWallClockMs,
+            latestVideoPtsUs = clock.latestVideoPtsUs,
+            latestAudioPtsUs = clock.latestAudioPtsUs,
+            lastMediaEmitElapsedRealtimeNs = clock.lastMediaEmitElapsedRealtimeNs
+        )
+    }
 
     /**
      * Request an IDR from an already user-authorized active stream.
@@ -130,6 +233,21 @@ public class RtspTransportFacade(private val module: RtspStreamingModule) {
      */
     public fun requestSyncFrame() {
         Handler(Looper.getMainLooper()).post { module.requestKeyFrame() }
+    }
+
+    /**
+     * Opens or closes only the paired-PC media egress gate for an already
+     * authorized projection. Closing it drops frames before any RTSP client
+     * receives them; it does not stop MediaProjection or ask the learner to
+     * grant consent again.
+     */
+    public fun setPairedPcOutputAllowed(allowed: Boolean) {
+        Handler(Looper.getMainLooper()).post { module.setPairedPcOutputAllowed(allowed) }
+    }
+
+    /** Installs the v2 sink only after edge-android has a real session binding. */
+    public fun setEncodedFrameSink(sink: RtspEncodedFrameSink?) {
+        Handler(Looper.getMainLooper()).post { module.setEncodedFrameSink(sink) }
     }
 
     /** Creates a capture attempt; the caller must subsequently obtain system consent. */

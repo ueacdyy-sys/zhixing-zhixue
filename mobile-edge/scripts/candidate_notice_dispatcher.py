@@ -6,7 +6,6 @@ import argparse
 import base64
 import json
 import sqlite3
-import subprocess
 import time
 from pathlib import Path
 
@@ -20,18 +19,16 @@ ACTION = "cn.zhixingzhixue.mobile.action.SHOW_CANDIDATE_NOTICE"
 
 
 def _l1_eligibility(*, fusion_mode: str, is_current_visit: bool, is_fresh: bool) -> tuple[bool, str]:
-    """L1 is evidence eligibility, never a dwell-time or notification-count level.
+    """Legacy candidates are migration evidence only and can never open L1.
 
-    L2–L4 are student-initiated learning paths and must not be selected here.
+    The arguments deliberately remain for read-only migration reports.  No
+    combination can promote a v1 candidate to a learning conclusion or issue
+    an Android system notification; only CONTENT_ANALYSIS_PACKAGE.v2 may do
+    that after the v2 gates have passed.
     """
 
-    if not is_current_visit:
-        return False, "VISIT_NO_LONGER_ACTIVE"
-    if fusion_mode != "TRIMODAL":
-        return False, "TRIMODAL_EVIDENCE_REQUIRED"
-    if not is_fresh:
-        return False, "LIVE_EDGE_LAG_EXCEEDED"
-    return True, "CURRENT_TRIMODAL_CANDIDATE"
+    del fusion_mode, is_current_visit, is_fresh
+    return False, "LEGACY_CHAIN_READ_ONLY"
 
 
 def _wire_card_payload(card: dict[str, object]) -> str:
@@ -86,19 +83,10 @@ def _eligible_candidates(ledger_path: Path, artifact_root: Path, maximum_lag_ns:
 
 
 def _send(adb: str, serial: str, card: dict[str, object]) -> tuple[bool, str]:
-    window_id = str(card["window_id"])
-    message = str(card["display_excerpt"])
-    encoded_card = _wire_card_payload(card)
-    command = [
-        adb, "-s", serial, "shell", "am", "broadcast", "-n", COMPONENT, "-a", ACTION,
-        "--es", "window_id", window_id,
-        "--es", "title", "发现一段可回看内容",
-        "--es", "message", message,
-        "--es", "candidate_card_b64", encoded_card,
-    ]
-    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
-    detail = ((completed.stdout or "") + (completed.stderr or "")).strip()
-    return completed.returncode == 0 and "Broadcast completed" in detail, detail[:1000]
+    """Hard stop: v1 code may neither invoke ADB nor reach a notification path."""
+
+    del adb, serial, card
+    return False, "LEGACY_CHAIN_READ_ONLY"
 
 
 def main() -> int:

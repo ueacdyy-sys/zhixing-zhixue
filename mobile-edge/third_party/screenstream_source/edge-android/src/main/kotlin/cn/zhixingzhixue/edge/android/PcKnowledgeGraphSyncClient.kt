@@ -13,7 +13,6 @@ import org.json.JSONObject
 public class PcKnowledgeGraphSyncClient(
     private val linkStore: AndroidPcDeliveryLinkStore,
     private val events: AndroidKnowledgeGraphEventStore,
-    private val pcInbox: AndroidPcResultInbox,
 ) {
     public suspend fun synchronizeOnce(): Int = withContext(Dispatchers.IO) {
         val link = linkStore.read() ?: return@withContext 0
@@ -66,11 +65,13 @@ public class PcKnowledgeGraphSyncClient(
     private suspend fun applyRemoteEvent(event: JSONObject) {
         if (event.getString("actor") != "PC_AI") return
         val payload = event.getJSONObject("payload")
-        val analysis = payload.optJSONObject("analysis_result")
-            ?: throw IllegalArgumentException("pc_graph_event_analysis_result_required")
-        // Reuse the existing evidence-gated PC result codec and transaction.
-        // A proposal is never converted into a student conclusion here.
-        pcInbox.accept(analysis.toString())
+        // Historical graph events can contain an embedded v1 analysis result.
+        // They remain journal data only: applying them to the old inbox would
+        // bypass v2's consent, route, evidence and package transaction.
+        if (payload.optJSONObject("analysis_result") != null) return
+        // v2 graph-revision ingestion is intentionally unavailable until it
+        // shares the same learner-scoped Room transaction as its package.
+        if (payload.optString("schema_version") == "CONTENT_GRAPH_REVISION.v2") return
     }
 
     private fun request(link: PcDeliveryLink, path: String, method: String, body: String?): String {

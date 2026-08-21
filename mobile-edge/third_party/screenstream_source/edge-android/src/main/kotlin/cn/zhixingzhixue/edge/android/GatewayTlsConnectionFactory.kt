@@ -38,6 +38,26 @@ public object GatewayTlsConnectionFactory {
         return PairingEndpoint(canonical, pin)
     }
 
+    /**
+     * The v1 pairing exchange has already parsed the learner-entered address
+     * and pinned its SPKI.  Follow-up v2 enrollment receives that canonical
+     * link, whose URL deliberately contains no fragment, so it must reuse the
+     * verified pin instead of attempting to parse the original bootstrap text.
+     */
+    public fun endpointFromTrustedLink(link: PcDeliveryLink): PairingEndpoint {
+        val uri = runCatching { URI(link.baseUrl) }
+            .getOrElse { throw IllegalArgumentException("pc_gateway_url_invalid") }
+        require(uri.scheme.equals("https", ignoreCase = true)) { "pc_delivery_https_required" }
+        require(uri.userInfo == null && uri.rawQuery == null && uri.rawFragment == null) {
+            "pc_gateway_url_components_unsupported"
+        }
+        require(uri.host?.isNotBlank() == true) { "pc_pairing_host_required" }
+        require(uri.path.isNullOrBlank() || uri.path == "/") { "pc_pairing_path_unsupported" }
+        require(uri.port in -1..65535 && uri.port != 0) { "pc_pairing_port_invalid" }
+        validatePin(link.spkiSha256)
+        return PairingEndpoint(link.baseUrl.removeSuffix("/"), link.spkiSha256)
+    }
+
     public fun open(link: PcDeliveryLink, url: String, method: String, timeoutMs: Int): HttpsURLConnection {
         val target = runCatching { URI(url) }.getOrElse { throw IllegalArgumentException("pc_gateway_url_invalid") }
         val paired = URI(link.baseUrl)

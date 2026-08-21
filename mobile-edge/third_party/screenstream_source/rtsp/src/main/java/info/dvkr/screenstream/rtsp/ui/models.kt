@@ -32,6 +32,11 @@ internal data class RtspState(
     val isStreaming: Boolean = false,
     val selectedVideoEncoder: VideoCodecInfo? = null,
     val selectedAudioEncoder: AudioCodecInfo? = null,
+    /** Requested configuration, not proof that a third-party app exposed its audio. */
+    val microphoneAudioRequested: Boolean = false,
+    val devicePlaybackAudioRequested: Boolean = false,
+    val audioCaptureDisabled: Boolean = false,
+    val audioCaptureFailureCode: String? = null,
     val serverBindings: List<RtspBinding> = emptyList(),
     val serverClientStats: List<ClientStats> = emptyList(),
     val clientStatus: RtspClientStatus = RtspClientStatus.IDLE,

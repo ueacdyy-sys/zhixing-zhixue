@@ -38,6 +38,10 @@ import info.dvkr.screenstream.common.module.ProjectionCoordinator
 import info.dvkr.screenstream.common.module.isStreamingModuleStartBlocked
 import info.dvkr.screenstream.rtsp.R
 import info.dvkr.screenstream.rtsp.RtspModuleService
+import info.dvkr.screenstream.rtsp.RtspEncodedFrame
+import info.dvkr.screenstream.rtsp.RtspEncodedFrameSink
+import info.dvkr.screenstream.rtsp.RtspEncodedTrack
+import info.dvkr.screenstream.rtsp.RtspEncodedVideoCodec
 import info.dvkr.screenstream.rtsp.internal.EncoderUtils.adjustResizeFactor
 import info.dvkr.screenstream.rtsp.internal.audio.AudioEncoder
 import info.dvkr.screenstream.rtsp.internal.audio.AudioSource
@@ -77,14 +81,17 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URISyntaxException
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
+@OptIn(ExperimentalUuidApi::class)
 internal class RtspStreamingService(
     private val service: RtspModuleService,
     private val mutableRtspStateFlow: MutableStateFlow<RtspState>,
     private val rtspSettings: RtspSettings,
     private val networkHelper: NetworkHelper,
-    private val streamingAnalytics: StreamingAnalytics
+    private val streamingAnalytics: StreamingAnalytics,
+    private val encodedFrameSinkProvider: () -> RtspEncodedFrameSink? = { null },
 ) : HandlerThread("RTSP-HT", android.os.Process.THREAD_PRIORITY_DISPLAY), Handler.Callback {
 
     private val appVersion = service.getVersionName()
@@ -238,11 +245,81 @@ internal class RtspStreamingService(
     private var projectionState: ProjectionState = ProjectionState()
     private var serverController: RtspServerController? = null
     private var clientController: RtspClientController? = null
+    private var pendingEncodedVideo: RtspEncodedFrame? = null
+    private var pendingEncodedAudio: RtspEncodedFrame? = null
+    private var lastEncodedSink: RtspEncodedFrameSink? = null
+
+    private fun emitEncodedFrame(frame: MediaFrame) {
+        val sink = encodedFrameSinkProvider() ?: return
+        if (sink !== lastEncodedSink) {
+            pendingEncodedVideo = null
+            pendingEncodedAudio = null
+            lastEncodedSink = sink
+        }
+        val detached = runCatching { frame.detachedCopy() }.getOrNull() ?: return
+        val bytes = ByteArray(detached.info.size)
+        detached.data.duplicate().apply {
+            position(detached.info.offset)
+            limit(detached.info.offset + detached.info.size)
+            get(bytes)
+        }
+        val encoded = when (detached) {
+            is MediaFrame.VideoFrame -> RtspEncodedFrame(
+                track = RtspEncodedTrack.VIDEO,
+                ptsUs = detached.info.timestamp,
+                durationUs = null,
+                isKeyFrame = detached.info.isKeyFrame,
+                bytes = bytes,
+                videoCodec = projectionState.lastVideoParams?.codec?.let { codec ->
+                    when (codec) {
+                        Codec.Video.H264 -> RtspEncodedVideoCodec.H264
+                        Codec.Video.H265 -> RtspEncodedVideoCodec.H265
+                        Codec.Video.AV1 -> RtspEncodedVideoCodec.AV1
+                    }
+                },
+                videoCodecConfigAnnexB = if (detached.info.isKeyFrame) h264ConfigAnnexB() else null,
+            )
+            is MediaFrame.AudioFrame -> RtspEncodedFrame(
+                track = RtspEncodedTrack.AUDIO,
+                ptsUs = detached.info.timestamp,
+                durationUs = null,
+                isKeyFrame = false,
+                bytes = bytes,
+            )
+        }
+        val previous = when (encoded.track) {
+            RtspEncodedTrack.VIDEO -> pendingEncodedVideo.also { pendingEncodedVideo = encoded }
+            RtspEncodedTrack.AUDIO -> pendingEncodedAudio.also { pendingEncodedAudio = encoded }
+        }
+        val durationUs = previous?.let { encoded.ptsUs - it.ptsUs }?.takeIf { it > 0L }
+        if (previous != null && durationUs != null) {
+            runCatching { sink.onEncodedFrame(previous.copy(durationUs = durationUs)) }
+                .onFailure { XLog.w(getLog("emitEncodedFrame", "v2 sink rejected encoded frame: ${it.message}"), it) }
+        }
+    }
+
+    /**
+     * The MediaCodec config buffer is not itself a media frame.  Copy the H.264
+     * parameter sets to each private-egress keyframe so a PC that starts after
+     * the first encoder callback can initialise a controlled Annex-B decoder.
+     * Other codecs are deliberately not relabelled as H.264.
+     */
+    private fun h264ConfigAnnexB(): ByteArray? {
+        val params = projectionState.lastVideoParams ?: return null
+        if (params.codec != Codec.Video.H264 || params.pps == null) return null
+        val startCode = byteArrayOf(0, 0, 0, 1)
+        return startCode + params.sps + startCode + params.pps
+    }
 
     private var currentError: RtspError? = null
     private var previousError: RtspError? = null
     private var audioCaptureDisabled: Boolean = false
+    private var audioCaptureFailureCode: String? = null
     private var audioIssueToastShown: Boolean = false
+    // Controls only paired-PC media egress. A false gate retains the
+    // user-authorized projection and RTSP session, but releases every encoded
+    // frame before a PC connection can receive, persist or analyse it.
+    private var pairedPcOutputAllowed: Boolean = true
     private var resizeActor: ResizeConflateActor? = null
     private var settingsLoaded: Boolean = false
     private var initializedMode: RtspSettings.Values.Mode? = null
@@ -592,6 +669,7 @@ internal class RtspStreamingService(
         data class OnAudioCodecChange(val name: String?) : InternalEvent(Priority.DESTROY_IGNORE)
         data class ModeChanged(val mode: RtspSettings.Values.Mode) : InternalEvent(Priority.RECOVER_IGNORE)
         data class StartStream(val permissionEducationShown: Boolean, val clearStartupPolicyError: Boolean = false) : InternalEvent(Priority.RECOVER_IGNORE)
+        data class SetPairedPcOutputAllowed(val allowed: Boolean) : InternalEvent(Priority.DESTROY_IGNORE)
         data object RetryBindings : InternalEvent(Priority.RECOVER_IGNORE)
         data class AudioCaptureError(val cause: Throwable) : InternalEvent(Priority.RECOVER_IGNORE)
 
@@ -831,6 +909,10 @@ internal class RtspStreamingService(
             isStreaming = projectionState.active != null,
             selectedVideoEncoder = selectedVideoEncoderInfo,
             selectedAudioEncoder = selectedAudioEncoderInfo,
+            microphoneAudioRequested = rtspSettings.data.value.enableMic,
+            devicePlaybackAudioRequested = rtspSettings.data.value.enableDeviceAudio,
+            audioCaptureDisabled = audioCaptureDisabled,
+            audioCaptureFailureCode = audioCaptureFailureCode,
             serverClientStats = serverController?.statsSnapshot.orEmpty(),
             error = currentError
         )
@@ -898,6 +980,7 @@ internal class RtspStreamingService(
                 currentError = null
                 previousError = null
                 audioCaptureDisabled = false
+                audioCaptureFailureCode = null
                 audioIssueToastShown = false
             }
 
@@ -1032,6 +1115,22 @@ internal class RtspStreamingService(
                     projectionState.waitingForPermission = true
                     XLog.i(getLog("Permission", "MP_UI request id=$startAttemptId source=button"))
                 }
+            }
+
+            is InternalEvent.SetPairedPcOutputAllowed -> {
+                val wasAllowed = pairedPcOutputAllowed
+                pairedPcOutputAllowed = event.allowed
+                if (!event.allowed) {
+                    pendingEncodedVideo = null
+                    pendingEncodedAudio = null
+                } else if (!wasAllowed) {
+                    // Re-entering a selected application must not make the PC
+                    // attempt to decode a P-frame after an intentional output
+                    // gap.  Ask the already-running encoder for a fresh IDR;
+                    // this changes no MediaProjection authorization.
+                    projectionState.active?.videoEncoder?.requestKeyFrame()
+                }
+                XLog.i(getLog("PairedPcOutputGate", "allowed=${event.allowed}; projection remains active=${projectionState.active != null}"))
             }
 
             is InternalEvent.RetryBindings -> {
@@ -1181,9 +1280,21 @@ internal class RtspStreamingService(
 
                 val onFrame: (MediaFrame) -> Unit =
                     if (modeLocal == RtspSettings.Values.Mode.SERVER) {
-                        { frame -> serverController?.onFrame(frame) ?: frame.release() }
+                        { frame ->
+                            if (pairedPcOutputAllowed) {
+                                emitEncodedFrame(frame)
+                                serverController?.onFrame(frame) ?: frame.release()
+                            }
+                            else frame.release()
+                        }
                     } else {
-                        { frame -> clientController?.onFrame(frame) ?: frame.release() }
+                        { frame ->
+                            if (pairedPcOutputAllowed) {
+                                emitEncodedFrame(frame)
+                                clientController?.onFrame(frame) ?: frame.release()
+                            }
+                            else frame.release()
+                        }
                     }
 
                 val wantsMicrophoneForSession = audioPermissionGranted && settings.enableMic
@@ -1489,6 +1600,7 @@ internal class RtspStreamingService(
                 if (audioCaptureDisabled) return
 
                 audioCaptureDisabled = true
+                audioCaptureFailureCode = event.cause.javaClass.simpleName
                 projectionState.lastAudioParams = null
                 projectionState.active?.audioEncoder?.stop()
                 projectionState.active?.audioEncoder = null
@@ -1626,6 +1738,7 @@ internal class RtspStreamingService(
         }
 
         audioCaptureDisabled = false
+        audioCaptureFailureCode = null
         audioIssueToastShown = false
 
         clientController?.stop()

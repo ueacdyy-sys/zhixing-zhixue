@@ -19,20 +19,22 @@ import org.json.JSONObject
 /** Local-first store for complete, mobile-readable candidate evidence cards. */
 public class AndroidCandidateCardRepository(context: Context) : CandidateCardRepository {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-    private val cards = MutableStateFlow(readAll())
+    // The candidate ledger is retained for explicit offline export/migration
+    // only. V5 must not project historical visit cards into Discover or L1.
+    private val cards = MutableStateFlow<List<CandidateCard>>(emptyList())
 
     override suspend fun upsert(card: CandidateCard) {
-        val updated = cards.value.filterNot { it.id == card.id } + card
-        preferences.edit().putString(CARDS, encode(updated).toString()).apply()
-        cards.value = updated
+        @Suppress("UNUSED_VARIABLE")
+        val rejected = card
+        throw IllegalStateException("legacy_candidate_repository_read_only")
     }
 
     override fun observe(): Flow<List<CandidateCard>> = cards
 
     /** Snapshot for an explicit user-initiated local export. */
-    public fun snapshot(): List<CandidateCard> = cards.value
+    public fun snapshot(): List<CandidateCard> = readLegacyForExport()
 
-    private fun readAll(): List<CandidateCard> = runCatching {
+    private fun readLegacyForExport(): List<CandidateCard> = runCatching {
         decode(JSONArray(preferences.getString(CARDS, "[]")))
     }.getOrDefault(emptyList())
 

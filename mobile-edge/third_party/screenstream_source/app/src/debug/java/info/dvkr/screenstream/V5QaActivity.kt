@@ -27,7 +27,6 @@ public class V5QaActivity : androidx.activity.ComponentActivity() {
         setContent {
             ScreenStreamTheme {
                 V5NativeApp(
-                    initialCandidateCardId = null,
                     qaRoute = route,
                     modifier = androidx.compose.ui.Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxSize(),
                 )

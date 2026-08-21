@@ -48,6 +48,27 @@ def sealed_fragment_from_worker_event(
     has_same_source_audio = audio_status is AudioStatus.SAME_SOURCE_AUDIO_VERIFIED
     if event.get("has_same_source_audio") is not has_same_source_audio:
         raise ContractError("worker_audio_claim_mismatch")
+    raw_generation = event.get("capture_generation")
+    if raw_generation is not None and (type(raw_generation) is not int or raw_generation < 1):
+        raise ContractError("worker_capture_generation_invalid")
+    audio_sync_error_ns: int | None = None
+    audio_sync_sample_hash: str | None = None
+    audio_max_allowed_sync_error_ns: int | None = None
+    if has_same_source_audio:
+        raw_error = event.get("audio_sync_error_ns")
+        raw_hash = event.get("audio_sync_sample_hash")
+        raw_maximum = event.get("audio_max_allowed_sync_error_ns")
+        if (
+            not isinstance(raw_error, int) or raw_error < 0
+            or not isinstance(raw_hash, str) or len(raw_hash) != 64
+            or not isinstance(raw_maximum, int) or raw_maximum < 0
+        ):
+            raise ContractError("worker_audio_sync_evidence_required")
+        if raw_error > raw_maximum:
+            raise ContractError("worker_audio_sync_exceeds_policy")
+        audio_sync_error_ns = raw_error
+        audio_sync_sample_hash = raw_hash
+        audio_max_allowed_sync_error_ns = raw_maximum
     relative_uri = media_path.relative_to(root).as_posix()
     try:
         return SealedFragment(
@@ -61,6 +82,10 @@ def sealed_fragment_from_worker_event(
             has_video=True,
             has_same_source_audio=has_same_source_audio,
             audio_status=audio_status,
+            audio_sync_error_ns=audio_sync_error_ns,
+            audio_sync_sample_hash=audio_sync_sample_hash,
+            audio_max_allowed_sync_error_ns=audio_max_allowed_sync_error_ns,
+            capture_generation=raw_generation,
             pc_arrival_first_ns=int(event["pc_arrival_first_monotonic_ns"]),
             pc_sealed_ns=int(event["pc_sealed_monotonic_ns"]),
             gap_before=bool(

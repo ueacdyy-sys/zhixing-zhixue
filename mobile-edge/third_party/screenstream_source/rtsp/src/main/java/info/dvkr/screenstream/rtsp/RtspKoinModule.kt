@@ -29,6 +29,7 @@ public val RtspKoinModule: org.koin.core.module.Module = module {
             RtspStreamingService(
                 service = params.get(),
                 mutableRtspStateFlow = params.get(),
+                encodedFrameSinkProvider = params.getOrNull<() -> RtspEncodedFrameSink?>() ?: { null },
                 rtspSettings = get(),
                 networkHelper = get(),
                 streamingAnalytics = get()

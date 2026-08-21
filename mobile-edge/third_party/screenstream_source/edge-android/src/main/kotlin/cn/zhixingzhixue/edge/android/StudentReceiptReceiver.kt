@@ -3,29 +3,10 @@ package cn.zhixingzhixue.edge.android
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import cn.zhixingzhixue.learning.domain.CaptureId
-import cn.zhixingzhixue.learning.domain.EvidenceCardId
-import cn.zhixingzhixue.learning.domain.StudentReceipt
-import cn.zhixingzhixue.learning.domain.StudentReceiptAction
-import java.time.OffsetDateTime
-
-/** Receipts are explicit student actions, persisted locally before later local-hub export. */
+/** Legacy candidate receiver retained only for binary compatibility; it has no production side effect. */
 public class StudentReceiptReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != ACTION_RECORD_RECEIPT) return
-        val captureId = intent.getStringExtra(EXTRA_CAPTURE_ID)?.takeIf { it.isNotBlank() } ?: return
-        val action = intent.getStringExtra(EXTRA_ACTION)?.let { value ->
-            runCatching { StudentReceiptAction.valueOf(value) }.getOrNull()
-        } ?: return
-        val candidateCardId = intent.getStringExtra(EXTRA_CANDIDATE_CARD_ID)?.takeIf { it.isNotBlank() }
-        AndroidReceiptStore(context).append(
-            StudentReceipt(
-                captureId = CaptureId(captureId),
-                evidenceCardId = candidateCardId?.let(::EvidenceCardId),
-                action = action,
-                recordedAt = OffsetDateTime.now()
-            )
-        )
+        // v1 candidate receipts cannot enter interest, profile or transport paths.
     }
 
     public companion object {

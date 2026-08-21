@@ -1,6 +1,9 @@
 [versions]
 agp = "9.2.1"
-kotlin = "2.4.0"
+# Room 2.8.4 currently reads Kotlin metadata through 2.3.x only.  Keep the
+# Android/KAPT toolchain on the newest compatible Kotlin line until Room
+# publishes a compiler with 2.4 metadata support.
+kotlin = "2.3.10"
 android-tools-desugar = "2.1.5"
 
 koin-android = "4.2.2"
@@ -16,6 +19,7 @@ androidx-lifecycle = "2.11.0"
 androidx-window = "1.5.1"
 androidx-datastore-preferences = "1.2.1"
 androidx-work = "2.11.2"
+androidx-room = "2.8.4"
 
 compose-bom = "2026.06.01"
 
@@ -42,6 +46,9 @@ androidx-window = { module = "androidx.window:window", version.ref = "androidx-w
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidx-datastore-preferences" }
 androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "androidx-core-splashscreen" }
 androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "androidx-work" }
+androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "androidx-room" }
+androidx-room-ktx = { module = "androidx.room:room-ktx", version.ref = "androidx-room" }
+androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "androidx-room" }
 
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
@@ -60,6 +67,8 @@ ktor-network-tls = { module = "io.ktor:ktor-network-tls", version.ref = "ktor" }
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
 androidLibrary = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-parcelize = { id = "org.jetbrains.kotlin.plugin.parcelize", version.ref = "kotlin" }
+kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

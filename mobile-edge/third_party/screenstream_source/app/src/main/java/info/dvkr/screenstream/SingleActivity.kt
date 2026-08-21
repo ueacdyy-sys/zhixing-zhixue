@@ -21,7 +21,6 @@ import info.dvkr.screenstream.common.module.StreamingModuleManager
 import info.dvkr.screenstream.common.settings.AppSettings
 import info.dvkr.screenstream.ui.ScreenStreamContent
 import cn.zhixingzhixue.edge.android.MobileAppServices
-import cn.zhixingzhixue.edge.android.CandidateNoticeReceiver
 import info.dvkr.screenstream.ui.theme.ScreenStreamTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
@@ -48,22 +47,15 @@ public class SingleActivity : androidx.activity.ComponentActivity() {
     private val appSettings: AppSettings by inject(mode = LazyThreadSafetyMode.NONE)
     private var deferredModuleId: StreamingModule.Id? = null
     private var moduleStartInProgress: StreamingModule.Id? = null
-    private var launchCandidateCardId by mutableStateOf<String?>(null)
-    private var launchOpenL1 by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         XLog.d(this@SingleActivity.getLog("onCreate", "Bug workaround: ${window.decorView}"))
         super.onCreate(savedInstanceState)
         MobileAppServices.initialize(applicationContext)
-        applyLearningNotificationIntent(intent)
-
         setContent {
             ScreenStreamTheme {
-                ScreenStreamContent(
-                    initialCandidateCardId = launchCandidateCardId,
-                    initialOpenL1 = launchOpenL1,
-                )
+                ScreenStreamContent()
             }
         }
 
@@ -108,12 +100,6 @@ public class SingleActivity : androidx.activity.ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        applyLearningNotificationIntent(intent)
-    }
-
-    private fun applyLearningNotificationIntent(intent: Intent) {
-        launchCandidateCardId = intent.getStringExtra(CandidateNoticeReceiver.EXTRA_CANDIDATE_CARD_ID)
-        launchOpenL1 = intent.getBooleanExtra(CandidateNoticeReceiver.EXTRA_OPEN_L1, false)
     }
 
     private suspend fun startModuleWithCheck(moduleId: StreamingModule.Id) {

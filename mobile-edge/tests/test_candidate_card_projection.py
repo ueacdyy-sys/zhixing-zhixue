@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from realtime_runtime.candidate_card_projection import project_candidate_cards  # noqa: E402
-from realtime_runtime.lane_worker import _record_candidate_projection_error  # noqa: E402
+from realtime_runtime.lane_worker import _record_v2_l0_projection_error  # noqa: E402
 from realtime_runtime.contracts import (  # noqa: E402
     Lane,
     LaneEvidence,
@@ -56,10 +56,10 @@ class CandidateCardProjectionTests(unittest.TestCase):
     def test_projection_failure_is_persisted_without_mutating_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            _record_candidate_projection_error(root, ValueError("bad artifact"))
-            entries = [json.loads(line) for line in (root / "candidate_card_projection_errors.jsonl").read_text(encoding="utf-8").splitlines()]
+            _record_v2_l0_projection_error(root, ValueError("bad artifact"))
+            entries = [json.loads(line) for line in (root / "v2_l0_projection_errors.jsonl").read_text(encoding="utf-8").splitlines()]
 
-        self.assertEqual(["CandidateCardProjectionFailed"], [item["event_type"] for item in entries])
+        self.assertEqual(["V2L0ProjectionFailed"], [item["event_type"] for item in entries])
         self.assertEqual("ValueError", entries[0]["error_type"])
 
     def test_rebuilds_candidate_card_and_visit_snapshot_from_durable_events(self) -> None:

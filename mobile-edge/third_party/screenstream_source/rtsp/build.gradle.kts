@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.androidLibrary)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.parcelize)
     alias(libs.plugins.kotlin.compose)
 }
@@ -28,4 +29,5 @@ dependencies {
 
     implementation(libs.ktor.network)
     implementation(libs.ktor.network.tls)
+    testImplementation(kotlin("test"))
 }

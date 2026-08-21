@@ -22,6 +22,7 @@ from .contracts import (
     VisitClosureReason,
     WindowDescriptor,
 )
+from .l0_audio_telemetry import L0AudioTelemetryReference
 
 
 class SealedWindowLedger:
@@ -65,6 +66,10 @@ class SealedWindowLedger:
                 has_video INTEGER NOT NULL,
                 has_same_source_audio INTEGER NOT NULL,
                 audio_status TEXT,
+                capture_generation INTEGER,
+                audio_sync_error_ns INTEGER,
+                audio_sync_sample_hash TEXT,
+                audio_max_allowed_sync_error_ns INTEGER,
                 pc_arrival_first_ns INTEGER NOT NULL,
                 pc_sealed_ns INTEGER NOT NULL,
                 gap_before INTEGER NOT NULL
@@ -81,6 +86,19 @@ class SealedWindowLedger:
                 fusion_mode TEXT NOT NULL DEFAULT 'TRIMODAL',
                 created_ns INTEGER NOT NULL DEFAULT 0,
                 fused_at_ns INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS fragment_l0_audio_telemetry_refs (
+                fragment_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                session_epoch_id TEXT NOT NULL,
+                capture_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                restriction TEXT NOT NULL,
+                video_pts_start_ns INTEGER NOT NULL,
+                video_pts_end_ns INTEGER NOT NULL,
+                PRIMARY KEY(fragment_id, snapshot_id),
+                FOREIGN KEY(fragment_id) REFERENCES fragments(fragment_id)
             );
             CREATE TABLE IF NOT EXISTS visits (
                 visit_id TEXT PRIMARY KEY,
@@ -133,6 +151,8 @@ class SealedWindowLedger:
                 ON jobs(lane, state, next_eligible_ns, lease_deadline_ns);
             CREATE INDEX IF NOT EXISTS windows_session_index
                 ON semantic_windows(session_id, start_pts_ns, end_pts_ns);
+            CREATE INDEX IF NOT EXISTS fragment_l0_audio_telemetry_fragment_index
+                ON fragment_l0_audio_telemetry_refs(fragment_id, video_pts_start_ns, video_pts_end_ns);
             CREATE INDEX IF NOT EXISTS fused_candidate_events_pts_index
                 ON fused_candidate_events(start_pts_ns, end_pts_ns, window_id);
             """
@@ -142,6 +162,10 @@ class SealedWindowLedger:
         self._ensure_column("jobs", "last_error_code", "TEXT")
         self._ensure_column("jobs", "terminal_ns", "INTEGER")
         self._ensure_column("fragments", "audio_status", "TEXT")
+        self._ensure_column("fragments", "capture_generation", "INTEGER")
+        self._ensure_column("fragments", "audio_sync_error_ns", "INTEGER")
+        self._ensure_column("fragments", "audio_sync_sample_hash", "TEXT")
+        self._ensure_column("fragments", "audio_max_allowed_sync_error_ns", "INTEGER")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {str(row["name"]) for row in self._connection.execute(f"PRAGMA table_info({table})")}
@@ -222,8 +246,9 @@ class SealedWindowLedger:
             """
             INSERT INTO fragments(
                 fragment_id, session_id, source_context, start_pts_ns, end_pts_ns, media_uri, media_sha256,
-                has_video, has_same_source_audio, audio_status, pc_arrival_first_ns, pc_sealed_ns, gap_before
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                has_video, has_same_source_audio, audio_status, capture_generation, audio_sync_error_ns, audio_sync_sample_hash,
+                audio_max_allowed_sync_error_ns, pc_arrival_first_ns, pc_sealed_ns, gap_before
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fragment.fragment_id,
@@ -236,11 +261,64 @@ class SealedWindowLedger:
                 int(fragment.has_video),
                 int(fragment.has_same_source_audio),
                 fragment.audio_status.value if fragment.audio_status else None,
+                fragment.capture_generation,
+                fragment.audio_sync_error_ns,
+                fragment.audio_sync_sample_hash,
+                fragment.audio_max_allowed_sync_error_ns,
                 fragment.pc_arrival_first_ns,
                 fragment.pc_sealed_ns,
                 int(fragment.gap_before),
             ),
         )
+
+    def append_l0_audio_telemetry_refs(
+        self,
+        fragment_id: str,
+        references: tuple[L0AudioTelemetryReference, ...],
+    ) -> None:
+        """Attach already validated handset telemetry without upgrading its L0 status."""
+
+        fragment = self._connection.execute(
+            "SELECT start_pts_ns, end_pts_ns FROM fragments WHERE fragment_id = ?", (fragment_id,)
+        ).fetchone()
+        if fragment is None:
+            raise ValueError("audio_telemetry_fragment_missing")
+        fragment_start = int(fragment["start_pts_ns"])
+        fragment_end = int(fragment["end_pts_ns"])
+        for reference in references:
+            if reference.video_pts_start_ns > fragment_end or reference.video_pts_end_ns < fragment_start:
+                raise ValueError("audio_telemetry_reference_outside_fragment")
+            existing = self._connection.execute(
+                """
+                SELECT payload_sha256, session_epoch_id, capture_path, status, restriction,
+                       video_pts_start_ns, video_pts_end_ns
+                FROM fragment_l0_audio_telemetry_refs
+                WHERE fragment_id = ? AND snapshot_id = ?
+                """,
+                (fragment_id, reference.snapshot_id),
+            ).fetchone()
+            values = (
+                reference.payload_sha256,
+                reference.session_epoch_id,
+                reference.capture_path,
+                reference.status,
+                reference.restriction,
+                reference.video_pts_start_ns,
+                reference.video_pts_end_ns,
+            )
+            if existing is not None:
+                if tuple(existing) != values:
+                    raise ValueError("audio_telemetry_reference_conflict")
+                continue
+            self._connection.execute(
+                """
+                INSERT INTO fragment_l0_audio_telemetry_refs(
+                    fragment_id, snapshot_id, payload_sha256, session_epoch_id,
+                    capture_path, status, restriction, video_pts_start_ns, video_pts_end_ns
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (fragment_id, reference.snapshot_id, *values),
+            )
 
     def open_visit(self, visit: Visit) -> None:
         self._connection.execute(
@@ -558,11 +636,14 @@ class SealedWindowLedger:
             "SELECT * FROM semantic_windows WHERE fused_at_ns IS NULL ORDER BY start_pts_ns, end_pts_ns, window_id"
         ).fetchall()
         for window in windows:
+            # An audio-integrity gap is retained as an explicit incomplete
+            # window.  It must not be fused, but it also must not permanently
+            # suppress a later independent window whose three lanes cover the
+            # exact same PTS/hash range.  Candidates never combine evidence
+            # across this gap.
+            if FusionMode(window["fusion_mode"]) is FusionMode.EVIDENCE_INCOMPLETE:
+                continue
             required_lanes = tuple(Lane(item) for item in json.loads(window["required_lanes_json"]))
-            if any(self.contiguous_watermark(window["visit_id"], lane) is None for lane in required_lanes):
-                continue
-            if any(self.contiguous_watermark(window["visit_id"], lane) < window["end_pts_ns"] for lane in required_lanes):
-                continue
             evidence = self._connection.execute(
                 "SELECT * FROM lane_evidence WHERE window_id = ? ORDER BY lane", (window["window_id"],)
             ).fetchall()
@@ -618,3 +699,32 @@ class SealedWindowLedger:
             )
             for row in rows
         ]
+
+    def fused_candidate_l0_inputs(self, candidate: FusedCandidate) -> tuple[str, tuple[str, ...]]:
+        """Expose verified legacy inputs solely to the v2 L0 read-only adapter.
+
+        This intentionally returns hashes rather than interpreting a candidate
+        as a learning conclusion. The v2 adapter remains unable to create L1.
+        """
+
+        window = self._connection.execute(
+            """
+            SELECT window_id, visit_id FROM semantic_windows
+            WHERE window_id = ? AND visit_id = ?
+            """,
+            (candidate.window_id, candidate.visit_id),
+        ).fetchone()
+        if window is None:
+            raise ValueError("fused_candidate_window_missing")
+        visit = self._connection.execute("SELECT session_id FROM visits WHERE visit_id = ?", (candidate.visit_id,)).fetchone()
+        if visit is None:
+            raise ValueError("fused_candidate_visit_missing")
+        evidence = self._connection.execute(
+            "SELECT artifact_uri, artifact_sha256 FROM lane_evidence WHERE window_id = ? ORDER BY lane",
+            (candidate.window_id,),
+        ).fetchall()
+        uris = tuple(str(row["artifact_uri"]) for row in evidence)
+        hashes = tuple(str(row["artifact_sha256"]) for row in evidence)
+        if uris != candidate.evidence_uris or not hashes or any(len(item) != 64 for item in hashes):
+            raise ValueError("fused_candidate_l0_evidence_mismatch")
+        return str(visit["session_id"]), hashes

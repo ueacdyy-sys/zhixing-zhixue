@@ -124,8 +124,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 @Composable
 public fun V5NativeApp(
-    initialCandidateCardId: String?,
-    initialOpenL1: Boolean = false,
     modifier: Modifier = Modifier,
     qaRoute: String? = null,
 ) {
@@ -155,13 +153,20 @@ public fun V5NativeApp(
     val discoverTransportFallback = remember { MutableStateFlow(RtspTransportSnapshot(RtspTransportStatus.IDLE, 0, null, false, null)) }
     val discoverTransport by (discoverTransportFacade?.state ?: discoverTransportFallback).collectAsState()
     val pcLink = remember { MobileAppServices.pcLinkStore(context) }.read()
+    // The paired-PC delivery service is an application capability, not a
+    // connection-page capability.  After process recreation the learner may
+    // land on Discover, Analysis, or Agent directly; restore the durable sync
+    // service there so leaving Connection cannot orphan PC delivery/recovery.
+    LaunchedEffect(pcLink?.deviceId, pcLink?.spkiSha256) {
+        if (pcLink != null) PcSyncForegroundService.start(context.applicationContext)
+    }
     var primary by rememberSaveable(qaRoute) { mutableStateOf(qa.primary) }
-    var route by rememberSaveable(qaRoute, initialCandidateCardId, initialOpenL1) {
-        mutableStateOf(if (initialOpenL1 && !initialCandidateCardId.isNullOrBlank()) V5Route.CONTENT else qa.route)
+    var route by rememberSaveable(qaRoute) {
+        mutableStateOf(qa.route)
     }
     var drawerOpen by rememberSaveable(qaRoute) { mutableStateOf(qa.drawerOpen) }
     var stream by rememberSaveable(qaRoute) { mutableStateOf(qa.stream) }
-    var selectedCandidateId by rememberSaveable(qaRoute, initialCandidateCardId) { mutableStateOf(qa.candidateId ?: initialCandidateCardId) }
+    var selectedCandidateId by rememberSaveable(qaRoute) { mutableStateOf(qa.candidateId) }
     var discoverResetKey by rememberSaveable { mutableStateOf(0) }
     var discoverSelectionRequest by rememberSaveable { mutableStateOf(0) }
     var profileView by rememberSaveable(qaRoute) { mutableStateOf(qa.profileView) }
@@ -314,7 +319,7 @@ public fun V5NativeApp(
                 },
                 canOfferLearningLevels = ((qaRoute != null || selectedCandidateId == "prototype-glasses-city") && selectedCandidateId != "prototype-poetry") || (candidates.firstOrNull { it.id.value == selectedCandidateId }?.isL1Eligible == true),
                 qaPreviewLevel = qa.contentLevel,
-                initialRequestedLevel = if (initialOpenL1) 1 else null,
+                initialRequestedLevel = null,
                 qaPreviewMapMode = qa.contentMapMode,
                 onBack = { discoverResetKey += 1; goBack() },
                 onOpenCanvas = { mapMode -> navigate(V5Route.CANVAS, "内容关系图", "content:$mapMode") },
@@ -1406,11 +1411,35 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     var discoveredCandidates by remember { mutableStateOf<List<LanGatewayCandidate>>(emptyList()) }
     var discoveryDialogOpen by rememberSaveable { mutableStateOf(false) }
     var discoveryInProgress by rememberSaveable { mutableStateOf(false) }
-    val activePcCaptureSessionId by pcCaptureSessions.activeSessionId.collectAsState()
+    val pcCapturePlan by pcCaptureSessions.plan.collectAsState()
     var pcCaptureStatus by rememberSaveable { mutableStateOf<String?>(null) }
-    // Bump only after an explicit 404: the paired PC process has forgotten
-    // its in-memory session and the still-live RTSP stream needs one rebuild.
-    var pcCaptureRecoveryEpoch by rememberSaveable { mutableIntStateOf(0) }
+    val usageStatsObserver = remember { UsageStatsForegroundAppObserver(context.applicationContext) }
+    val persistedCaptureUiSelection = captureUiSelectionForPlan(pcCapturePlan)
+    var captureModeIndex by rememberSaveable {
+        mutableIntStateOf(persistedCaptureUiSelection.modeIndex)
+    }
+    var selectedPackageCsv by rememberSaveable {
+        mutableStateOf(persistedCaptureUiSelection.selectedPackages.sorted().joinToString(","))
+    }
+    var appListRefresh by rememberSaveable { mutableIntStateOf(0) }
+    val selectedPackages = remember(selectedPackageCsv) {
+        selectedPackageCsv.split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet()
+    }
+    val capturePolicy = remember(captureModeIndex, selectedPackages) {
+        runCatching {
+            if (captureModeIndex == 0) PcCaptureModePolicy.fullContinuous()
+            else PcCaptureModePolicy.selectedApps(selectedPackages)
+        }.getOrNull()
+    }
+    // The foreground service owns the durable policy.  Rehydrate the editor
+    // whenever a new capture generation is observed so reopening the Activity
+    // cannot display "全量连续" while the service is enforcing an app filter.
+    LaunchedEffect(pcCapturePlan?.generation, pcCapturePlan?.capturePolicy) {
+        val persisted = captureUiSelectionForPlan(pcCapturePlan)
+        captureModeIndex = persisted.modeIndex
+        selectedPackageCsv = persisted.selectedPackages.sorted().joinToString(",")
+    }
+    val recentPackages = remember(appListRefresh) { usageStatsObserver.recentlyForegroundPackages() }
     val lanDiscovery = remember { LanGatewayDiscovery() }
     val facade = rememberStartedRtspFacade()
     val fallback = remember { MutableStateFlow(RtspTransportSnapshot(RtspTransportStatus.IDLE, 0, null, false, null)) }
@@ -1428,84 +1457,46 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
         // from a previous client attempt used to mask WAITING state and stop
         // Android's MediaProjection dialog from ever launching.
         startAttemptId = transport.startAttemptId,
-        onStartRequested = { educationShown -> facade?.beginUserCapture(context, educationShown) },
+        onStartRequested = { educationShown ->
+            // The RTSP module is already running before the user can reach
+            // this action. Set the paired-PC egress gate before requesting
+            // MediaProjection so selected-app mode cannot leak its first
+            // frame during foreground-service and gateway startup.
+            facade?.setPairedPcOutputAllowed(capturePolicy?.initialPairedPcOutputAllowed ?: false)
+            facade?.beginUserCapture(context, educationShown)
+        },
         onPermissionGranted = { attemptId, permissionIntent -> facade?.submitProjectionPermission(attemptId, permissionIntent) },
         onPermissionDenied = { attemptId -> facade?.rejectProjectionPermission(attemptId) },
     )
-    // This is the application-level hand-off missing from the former flow:
-    // MediaProjection -> Android RTSP SERVER -> authenticated PC supervisor.
-    // It runs only after STREAMING is factual, never merely after tapping 开始.
-    LaunchedEffect(streaming, paired, currentRtspSettings.mode, currentRtspSettings.serverPort, currentRtspSettings.serverPath, pcCaptureRecoveryEpoch) {
-        if (streaming && paired && currentRtspSettings.mode == RtspSettings.Values.Mode.SERVER && activePcCaptureSessionId == null) {
-            var retry = 0
-            var startedSessionId: String? = null
-            while (startedSessionId == null && retry < PC_CAPTURE_START_MAX_ATTEMPTS) {
-                val sessionId = "phone-" + UUID.randomUUID()
-                pcCaptureStatus = if (retry == 0) "正在通知 PC 捕获屏幕流…" else "PC 连接重试中（${retry + 1}/$PC_CAPTURE_START_MAX_ATTEMPTS）…"
-                runCatching { pcDelivery.startCaptureSession(sessionId, currentRtspSettings.serverPort, currentRtspSettings.serverPath) }
-                    .onSuccess { session ->
-                        pcCaptureSessions.activate(session.sessionId)
-                        startedSessionId = session.sessionId
-                        pcCaptureStatus = describePcCaptureSession(session)
-                    }
-                    .onFailure { error ->
-                        retry += 1
-                        pcCaptureStatus = "PC 捕获未启动：${error.message?.take(100) ?: "连接失败"}"
-                    }
-                if (activePcCaptureSessionId == null && retry < PC_CAPTURE_START_MAX_ATTEMPTS) {
-                    delay(PC_CAPTURE_START_RETRY_DELAY_MS * retry)
-                }
+    // UI grants MediaProjection and starts the Android RTSP server.  The
+    // foreground service owns PC-worker recovery afterwards, including when
+    // this route is gone or the gateway process restarts.
+    LaunchedEffect(streaming, paired, currentRtspSettings.mode, currentRtspSettings.serverPort, currentRtspSettings.serverPath, capturePolicy) {
+        if (streaming && paired && currentRtspSettings.mode == RtspSettings.Values.Mode.SERVER) {
+            if (capturePolicy != null) {
+                PcSyncForegroundService.startCapture(context.applicationContext, currentRtspSettings.serverPort, currentRtspSettings.serverPath, capturePolicy)
+            } else {
+                pcCaptureStatus = "指定应用模式至少要选择一个应用；当前不会向 PC 建立分析会话"
             }
-        } else if (!streaming && activePcCaptureSessionId != null) {
-            val sessionId = activePcCaptureSessionId ?: return@LaunchedEffect
-            runCatching { pcDelivery.stopCaptureSession(sessionId) }
-            // Keep the id until the PC supervisor reaches a terminal state.
-            // Clearing it here cancels the status poll and leaves the visible
-            // connection page stuck on the transient “正在收尾” label forever.
-            pcCaptureStatus = "手机流已停止，PC 正在收尾当前证据窗口"
+        } else if (!streaming) {
+            PcSyncForegroundService.stopCapture(context.applicationContext)
         } else if (streaming && currentRtspSettings.mode != RtspSettings.Values.Mode.SERVER) {
             pcCaptureStatus = "PC 自动分析要求“服务端”模式；当前客户端模式没有 PC 接收端"
         }
     }
-    // The capture start response is not a durable health signal.  Poll the
-    // paired PC through both streaming and tail settlement.  A capture is not
-    // complete when MediaProjection stops: the PC must first seal and fuse the
-    // final window, then report its terminal state back to this page.
-    LaunchedEffect(activePcCaptureSessionId, paired, streaming) {
-        val sessionId = activePcCaptureSessionId ?: return@LaunchedEffect
-        if (!paired) return@LaunchedEffect
-        var terminal = false
-        while (!terminal) {
-            runCatching { pcDelivery.captureSessionStatus(sessionId) }
-                .onSuccess { session ->
-                    pcCaptureStatus = describePcCaptureSession(session)
-                    // A failed PC worker must not leave MediaProjection
-                    // recording indefinitely while the page still says
-                    // "传输中".  The learner can start a fresh, paired run
-                    // after the visible error has been corrected.
-                    if (session.state.startsWith("FAILED") && streaming) {
-                        facade?.stopUserCapture()
-                    }
-                    if (isTerminalPcCaptureSession(session.state)) {
-                        terminal = true
-                        pcCaptureSessions.clear(sessionId)
-                    }
-                }
-                .onFailure { error ->
-                    if (error.message == "pc_delivery_http_404") {
-                        pcCaptureSessions.clear(sessionId)
-                        terminal = true
-                        if (streaming) {
-                            pcCaptureRecoveryEpoch += 1
-                            pcCaptureStatus = "PC 服务已重启，正在重新建立分析会话…"
-                        } else {
-                            pcCaptureStatus = "PC 会话已结束，未返回最终状态"
-                        }
-                    } else {
-                        pcCaptureStatus = "PC 状态暂时不可达：${error.message?.take(100) ?: "连接失败"}"
-                    }
-                }
-            if (!terminal) delay(PC_CAPTURE_STATUS_POLL_INTERVAL_MS)
+    LaunchedEffect(pcCapturePlan) {
+        val plan = pcCapturePlan
+        pcCaptureStatus = when {
+            plan == null -> null
+            // A stopped source has no active PC capture.  Its completed or
+            // failed settlement remains auditable on the PC, but it must not
+            // occupy the compact connection surface as a live error.
+            !streaming && !plan.desired -> null
+            plan.pcState == "RECOVERING" -> "PC 连接恢复中：${plan.error ?: "正在重试"}"
+            plan.pcState == "STOPPING" -> "手机流已停止，PC 正在收尾当前证据窗口"
+            plan.pcState?.startsWith("FAILED") == true -> "PC 分析已停止：${plan.error ?: "Worker 异常退出"}"
+            plan.pcState != null -> describePcCaptureSession(PcCaptureSession(plan.sessionId ?: "pending", plan.pcState, plan.error))
+            else -> "正在通知 PC 捕获屏幕流…"
         }
     }
     LaunchedEffect(paired) {
@@ -1513,6 +1504,40 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     }
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 58.dp, bottom = 18.dp)) {
         V5PageHeading("连接", "") {}
+        V5Panel(modifier = Modifier.padding(top = 8.dp), tint = Color(0xFFF8FBFF), border = Color(0xFFDCEAF7)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("手机采集范围", color = NativeV5Tokens.Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = NativeV5Tokens.Font, modifier = Modifier.weight(1f))
+                V5Pill(if (captureModeIndex == 0) "全量连续" else "指定应用", captureModeIndex == 0)
+            }
+            V5Segmented(listOf("全量连续", "指定应用"), captureModeIndex, enabled = { !streaming }) { captureModeIndex = it }
+            if (captureModeIndex == 0) {
+                Text("一次屏幕授权后，公开视频流会持续发送给已配对 PC，直到你主动停止或系统中断。", color = NativeV5Tokens.Muted, fontSize = 11.sp, lineHeight = 16.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 6.dp))
+            } else {
+                Text("屏幕授权会保持；只有你选中的社交/视频应用在前台时，媒体才会发送到 PC。切到其他应用时不传输、不落到 PC、不进入模型，返回后自动继续。", color = NativeV5Tokens.Muted, fontSize = 11.sp, lineHeight = 16.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 6.dp))
+                Row(modifier = Modifier.fillMaxWidth().padding(top = 7.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    V5SecondaryButton("授权使用情况", Modifier.weight(1f), enabled = !streaming) {
+                        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                    }
+                    V5SecondaryButton("授权无障碍观察", Modifier.weight(1f), enabled = !streaming) {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }
+                }
+                Text(if (usageStatsObserver.hasUsageAccess()) "已获得“使用情况访问”：下方显示近期打开过的应用。无障碍观察为优先来源；两者只读取应用包名。" else "请先在系统中授权“使用情况访问”，以显示近期应用并在无障碍未开启时提供降级观测。", color = NativeV5Tokens.Muted, fontSize = 10.sp, lineHeight = 14.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 6.dp))
+                V5SecondaryButton("刷新近期应用", Modifier.fillMaxWidth().padding(top = 6.dp), enabled = !streaming && usageStatsObserver.hasUsageAccess()) { appListRefresh++ }
+                if (recentPackages.isEmpty()) {
+                    Text("暂未取得可选择的近期应用。授权后请先打开目标应用一次，再回来刷新。", color = NativeV5Tokens.Warning, fontSize = 10.sp, lineHeight = 14.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 5.dp))
+                } else {
+                    recentPackages.forEach { packageName ->
+                        val selected = packageName in selectedPackages
+                        V5SecondaryButton(if (selected) "已选：$packageName" else "选择：$packageName", Modifier.fillMaxWidth().padding(top = 4.dp), enabled = !streaming) {
+                            val next = if (selected) selectedPackages - packageName else selectedPackages + packageName
+                            selectedPackageCsv = next.sorted().joinToString(",")
+                        }
+                    }
+                }
+                if (selectedPackages.isEmpty()) Text("还没有选择应用：开始按钮将保持不可用。", color = NativeV5Tokens.Warning, fontSize = 10.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 5.dp))
+            }
+        }
         // 连接首页只保留一个公开媒体会话区块：主控制 + 设置入口。
         // “会话详情”属于媒体会话设置内部状态，不再作为第二条平行入口。
         V5Panel(modifier = Modifier.padding(top = 8.dp), tint = Color(0xFFF5FAFF), border = Color(0xFFDCEAF7)) {
@@ -1524,7 +1549,7 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
                 if (streaming) {
                     V5PrimaryButton("停止", Modifier.weight(1f), enabled = facade != null) { facade?.stopUserCapture() }
                 } else {
-                    V5PrimaryButton("开始", Modifier.weight(1f), enabled = facade != null && transport.status != RtspTransportStatus.STARTING) { captureRequester.request() }
+                    V5PrimaryButton("开始", Modifier.weight(1f), enabled = facade != null && transport.status != RtspTransportStatus.STARTING && capturePolicy != null) { captureRequester.request() }
                 }
                 V5SecondaryButton("会话设置", Modifier.weight(1f)) { onOpenControls() }
             }
@@ -1533,12 +1558,15 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
                 transport.failureCode != null -> Text("启动失败：${transport.failureCode}", color = NativeV5Tokens.Warning, fontSize = 10.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 4.dp))
             }
             pcCaptureStatus?.let { Text(it, color = if (it.startsWith("PC 已接收") || it.startsWith("手机流已停止")) NativeV5Tokens.Positive else NativeV5Tokens.Warning, fontSize = 10.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 3.dp)) }
+            pcCapturePlan?.takeIf { it.capturePolicy.mode == PcCaptureMode.SELECTED_APPS }?.let { plan ->
+                Text(describeCaptureOutputGate(plan.captureOutputState), color = if (plan.captureOutputState == CaptureOutputGateTransition.ALLOWED_SELECTED_APP) NativeV5Tokens.Positive else NativeV5Tokens.Warning, fontSize = 10.sp, lineHeight = 14.sp, fontFamily = NativeV5Tokens.Font, modifier = Modifier.padding(top = 3.dp))
+            }
         }
         V5Panel(modifier = Modifier.padding(top = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("本地 PC 中枢", color = NativeV5Tokens.Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = NativeV5Tokens.Font, modifier = Modifier.weight(1f))
                 V5Pill(if (paired) "已配对" else "待配对", paired)
-                if (paired) TextButton(onClick = { scope.launch { pcDelivery.unpair(); paired = false; pairingStatus = "PC 配对已解除" } }, contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 7.dp, end = 0.dp, top = 0.dp, bottom = 0.dp)) { Text("解除", color = NativeV5Tokens.Muted, fontSize = 11.sp, fontFamily = NativeV5Tokens.Font) }
+                if (paired) TextButton(onClick = { scope.launch { PcSyncForegroundService.stop(context.applicationContext); pcDelivery.unpair(); paired = false; pairingStatus = "PC 配对已解除" } }, contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 7.dp, end = 0.dp, top = 0.dp, bottom = 0.dp)) { Text("解除", color = NativeV5Tokens.Muted, fontSize = 11.sp, fontFamily = NativeV5Tokens.Font) }
             }
             Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (paired) {
@@ -1596,7 +1624,23 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
                 OutlinedTextField(value = pairingCode, onValueChange = { pairingCode = it }, label = { Text("一次性配对码", fontFamily = NativeV5Tokens.Font) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true)
             }
         },
-        confirmButton = { TextButton(enabled = pairingAddress.isNotBlank() && pairingCode.isNotBlank(), onClick = { scope.launch { pairingStatus = "正在验证 HTTPS 证书与 SPKI 指纹…"; runCatching { pcDelivery.pair(pairingAddress, pairingCode) }.onSuccess { paired = true; PcSyncForegroundService.start(context.applicationContext); pairingCode = ""; pairingDialogOpen = false; pairingStatus = "配对完成：PC 网关令牌已安全保存" }.onFailure { error -> pairingStatus = "PC 配对失败：${error.message?.take(120) ?: "连接失败"}" } } }) { Text("开始配对", fontFamily = NativeV5Tokens.Font) } },
+        confirmButton = { TextButton(enabled = pairingAddress.isNotBlank() && pairingCode.isNotBlank(), onClick = { scope.launch {
+            pairingStatus = "正在验证 HTTPS 证书、SPKI 指纹并登记设备凭据…"
+            val bootstrapCode = pairingCode.trim()
+            runCatching {
+                val link = pcDelivery.pair(pairingAddress, bootstrapCode)
+                MobileAppServices.pcV2DeviceCredentialClient(context).enroll(link, bootstrapCode)
+            }.onSuccess {
+                paired = true
+                PcSyncForegroundService.start(context.applicationContext)
+                pairingCode = ""
+                pairingDialogOpen = false
+                pairingStatus = "配对完成：v2 设备凭据已登记"
+            }.onFailure { error ->
+                runCatching { pcDelivery.unpair() }
+                pairingStatus = "PC 安全配对失败：${error.message?.take(120) ?: "凭据登记失败"}"
+            }
+        } }) { Text("开始配对", fontFamily = NativeV5Tokens.Font) } },
         dismissButton = { TextButton(onClick = { pairingCode = ""; pairingDialogOpen = false }) { Text("取消", fontFamily = NativeV5Tokens.Font) } },
     )
     if (discoveryDialogOpen) AlertDialog(
@@ -1608,7 +1652,10 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
                     TextButton(onClick = {
                         scope.launch {
                             pairingStatus = "正在验证 ${candidate.deviceName} 的证书…"
-                            runCatching { pcDelivery.pairDiscovered(candidate) }
+                            runCatching {
+                                val link = pcDelivery.pairDiscovered(candidate)
+                                MobileAppServices.pcV2DeviceCredentialClient(context).enroll(link, candidate.pairingToken)
+                            }
                                 .onSuccess { paired = true; PcSyncForegroundService.start(context.applicationContext); discoveryDialogOpen = false; pairingStatus = "配对完成：后续将自动重连" }
                                 .onFailure { error -> pairingStatus = "PC 配对失败：${error.message?.take(120) ?: "连接失败"}" }
                         }
@@ -1623,10 +1670,6 @@ private fun V5ConnectionPage(pcPaired: Boolean, onOpenControls: () -> Unit, onOp
     )
 }
 
-private const val PC_CAPTURE_STATUS_POLL_INTERVAL_MS: Long = 5_000
-private const val PC_CAPTURE_START_MAX_ATTEMPTS = 4
-private const val PC_CAPTURE_START_RETRY_DELAY_MS = 1_500L
-
 private fun describePcCaptureSession(session: PcCaptureSession): String = when (session.state) {
     "STARTING" -> "PC 已接收，正在启动分析"
     "RUNNING" -> "PC 已接收，正在分析"
@@ -1639,8 +1682,13 @@ private fun describePcCaptureSession(session: PcCaptureSession): String = when (
     else -> "PC 会话状态：${session.state}${session.error?.let { " · $it" } ?: ""}"
 }
 
-private fun isTerminalPcCaptureSession(state: String): Boolean =
-    state == "STOPPED" || state == "COMPLETED" || state.startsWith("FAILED")
+private fun describeCaptureOutputGate(state: CaptureOutputGateTransition): String = when (state) {
+    CaptureOutputGateTransition.ALLOWED_FULL_CONTINUOUS -> "全量连续模式：媒体外发已允许"
+    CaptureOutputGateTransition.ALLOWED_SELECTED_APP -> "当前是已选择应用：媒体正在发送到 PC"
+    CaptureOutputGateTransition.BLOCKED_UNOBSERVED -> "等待前台应用观察：指定应用模式暂不向 PC 外发"
+    CaptureOutputGateTransition.BLOCKED_UNSELECTED_APP -> "当前不是已选择应用：媒体外发已暂停，屏幕授权仍保持"
+    CaptureOutputGateTransition.BLOCKED_POLICY_UNCONFIRMED -> "正在等待 PC 对本次应用观察确认：媒体暂不外发"
+}
 
 @Composable
 private fun V5FullKnowledgeCanvas(

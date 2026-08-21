@@ -9,11 +9,14 @@ state instead of silently disappearing.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import ipaddress
 import json
 import os
+import ctypes
+from ctypes import wintypes
 import secrets
 import sqlite3
 import subprocess
@@ -23,15 +26,47 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Literal
 
 import httpx
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+try:  # Support both ``python scripts/local_agent_gateway.py`` and package imports in tests.
+    from .capture_session_policy import CaptureMode, CaptureOutputDecision, CaptureOutputState, CaptureSessionPolicy
+    from .realtime_runtime.media_security import (
+        MediaFragmentEnvelope,
+        MediaFragmentHeader,
+        MediaSecurityAuthority,
+        MediaSecurityOpenRequest,
+    )
+    from .realtime_runtime.media_buffer import PcBufferResumeCursor, PcMediaBuffer
+    from .realtime_runtime.v2_l0_media_processor import (
+        V2L0MediaProcessor,
+        V2L0MediaProcessorError,
+        V2L0ProcessingDispatcher,
+    )
+except ImportError:  # pragma: no cover - exercised by the direct script entrypoint on Windows.
+    from capture_session_policy import CaptureMode, CaptureOutputDecision, CaptureOutputState, CaptureSessionPolicy
+    from realtime_runtime.media_security import (
+        MediaFragmentEnvelope,
+        MediaFragmentHeader,
+        MediaSecurityAuthority,
+        MediaSecurityOpenRequest,
+    )
+    from realtime_runtime.media_buffer import PcBufferResumeCursor, PcMediaBuffer
+    from realtime_runtime.v2_l0_media_processor import (
+        V2L0MediaProcessor,
+        V2L0MediaProcessorError,
+        V2L0ProcessingDispatcher,
+    )
 
 
 UTC = timezone.utc
@@ -44,6 +79,9 @@ MAX_GRAPH_EVENT_PAYLOAD_BYTES = 48 * 1024
 MAX_GRAPH_EVENTS_PER_REQUEST = 50
 DEFAULT_MESSAGE_TTL_SECONDS = 300
 DELIVERY_LEASE_SECONDS = 30
+MAX_DELIVERY_RETRIES = 5
+INITIAL_DELIVERY_RETRY_DELAY_SECONDS = 2
+MAX_DELIVERY_RETRY_DELAY_SECONDS = 5 * 60
 # This is a user-approved, TLS-pinned device pairing credential rather than a
 # browser login session.  An eight-hour expiry made a phone silently lose its
 # automatic PC connection after an overnight pause and forced needless manual
@@ -53,6 +91,10 @@ PAIRING_CREDENTIAL_TTL_SECONDS = 365 * 24 * 60 * 60
 PAIRING_ATTEMPT_WINDOW_SECONDS = 5 * 60
 PAIRING_ATTEMPT_LIMIT = 5
 NEARBY_PAIRING_WINDOW_SECONDS = 120
+V2_ACCESS_TOKEN_TTL_SECONDS = 15 * 60
+V2_PROOF_CLOCK_SKEW_MS = 60 * 1000
+V2_PROOF_NONCE_TTL_SECONDS = 5 * 60
+V2_MEDIA_SECURITY_SESSION_TTL_MS = 10 * 60 * 1000
 
 
 def utc_now() -> datetime:
@@ -71,6 +113,57 @@ def parse_time(value: str) -> datetime:
 def sha256(value: str | bytes) -> str:
     raw = value.encode("utf-8") if isinstance(value, str) else value
     return hashlib.sha256(raw).hexdigest()
+
+
+def build_v2_device_proof_payload(
+    *,
+    method: str,
+    path: str,
+    device_id: str,
+    timestamp_ms: int,
+    nonce: str,
+    body_sha256: str | None,
+) -> bytes:
+    """Canonical bytes signed by the non-exportable Android credential.
+
+    A proof always names its HTTP method and target path, so a valid refresh
+    signature cannot be replayed as a capture, revoke, or media request.
+    ``body_sha256`` is reserved for future signed v2 writes; the token refresh
+    body is empty and therefore uses the canonical SHA-256 of empty bytes.
+    """
+
+    if (
+        method.upper() != method
+        or not path.startswith("/api/v2/")
+        or not device_id
+        or "\n" in device_id
+        or type(timestamp_ms) is not int
+        or timestamp_ms < 0
+        or len(nonce) < 16
+        or len(nonce) > 256
+        or any(character in nonce for character in "\r\n")
+    ):
+        raise ValueError("v2_device_proof_payload_invalid")
+    digest = body_sha256 or sha256(b"")
+    if len(digest) != 64:
+        raise ValueError("v2_device_proof_body_hash_invalid")
+    return (
+        "ZHIXING_DEVICE_PROOF.v2\n"
+        f"{method}\n{path}\n{device_id}\n{timestamp_ms}\n{nonce}\n{digest}\n"
+    ).encode("utf-8")
+
+
+def _decode_v2_device_public_key(public_key_spki_b64: str) -> bytes:
+    """Accept only an Android-compatible P-256 public key in SPKI DER form."""
+
+    try:
+        encoded = base64.b64decode(public_key_spki_b64, validate=True)
+        key = serialization.load_der_public_key(encoded)
+    except (TypeError, ValueError) as error:
+        raise ValueError("v2_device_public_key_invalid") from error
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+        raise ValueError("v2_device_public_key_curve_unsupported")
+    return key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
 @dataclass(frozen=True)
@@ -96,6 +189,10 @@ class GatewaySettings:
     gateway_ca_bundle: Path | None = None
     realtime_runner: Path | None = None
     realtime_output_dir: Path | None = None
+    # The v2 Android egress posts encrypted codec frames directly to this
+    # gateway.  The historical RTSP pull runner writes clear audio/video
+    # working files and therefore must never be enabled by default.
+    legacy_rtsp_ingress_enabled: bool = False
 
     @classmethod
     def from_environment(cls) -> "GatewaySettings":
@@ -126,6 +223,7 @@ class GatewaySettings:
             gateway_ca_bundle=Path(os.environ["ZHIXING_GATEWAY_CA_BUNDLE"]) if os.environ.get("ZHIXING_GATEWAY_CA_BUNDLE", "").strip() else None,
             realtime_runner=Path(os.environ["ZHIXING_REALTIME_RUNNER"]) if os.environ.get("ZHIXING_REALTIME_RUNNER", "").strip() else None,
             realtime_output_dir=Path(os.environ["ZHIXING_REALTIME_OUTPUT_DIR"]) if os.environ.get("ZHIXING_REALTIME_OUTPUT_DIR", "").strip() else None,
+            legacy_rtsp_ingress_enabled=os.environ.get("ZHIXING_ENABLE_LEGACY_RTSP_INGRESS", "").strip().lower() in {"1", "true", "yes"},
         )
 
     @property
@@ -236,6 +334,87 @@ class PairRequest(BaseModel):
     pairing_token: str = Field(min_length=1, max_length=256)
 
 
+class V2DeviceCredentialEnrollmentRequest(PairRequest):
+    """Bootstrap only: pairing code plus the Android Keystore public key."""
+
+    public_key_spki_b64: str = Field(min_length=32, max_length=2048)
+
+
+class V2MediaSecurityOpenIngress(BaseModel):
+    """Authenticated ECDH open request for the v2 media data plane."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, max_length=160)
+    learner_id: str = Field(min_length=1, max_length=256)
+    capture_session_id: str = Field(min_length=1, max_length=160)
+    capture_consent_id: str = Field(min_length=1, max_length=160)
+    consent_generation: int = Field(ge=1)
+    route_lease_id: str = Field(min_length=1, max_length=160)
+    route_epoch: int = Field(ge=1)
+    capture_epoch: int = Field(default=1, ge=1)
+    client_ephemeral_spki_b64: str = Field(min_length=32, max_length=2048)
+    signature_b64: str = Field(min_length=8, max_length=1024)
+
+
+class V2MediaFragmentHeaderIngress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    media_security_session_id: str = Field(min_length=24, max_length=128)
+    learner_id: str = Field(min_length=1, max_length=256)
+    capture_session_id: str = Field(min_length=1, max_length=160)
+    capture_consent_id: str = Field(min_length=1, max_length=160)
+    consent_generation: int = Field(ge=1)
+    route_lease_id: str = Field(min_length=1, max_length=160)
+    route_epoch: int = Field(ge=1)
+    sequence: int = Field(ge=0)
+    pts_start_us: int = Field(ge=0)
+    pts_end_us: int = Field(ge=0)
+    media_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    capture_epoch: int = Field(default=1, ge=1)
+
+
+class V2MediaFragmentIngress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    header: V2MediaFragmentHeaderIngress
+    nonce_b64: str = Field(min_length=16, max_length=32)
+    ciphertext_b64: str = Field(min_length=24, max_length=16 * 1024 * 1024)
+    # Kept at the envelope level so the durable PC buffer can fence a resumed
+    # capture epoch.  Default 1 preserves the pre-buffer wire fixture; new
+    # Android clients must send the real capture epoch.
+    capture_epoch: int = Field(default=1, ge=1)
+
+
+class V2MediaResumeCursorIngress(BaseModel):
+    epoch: int = Field(ge=1)
+    sequence: int = Field(ge=-1)
+    range_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+class V2MediaResumeIngress(BaseModel):
+    learner_id: str = Field(min_length=1, max_length=256)
+    capture_session_id: str = Field(min_length=1, max_length=160)
+    capture_consent_id: str = Field(min_length=1, max_length=160)
+    consent_generation: int = Field(ge=1)
+    route_lease_id: str = Field(min_length=1, max_length=160)
+    route_epoch: int = Field(ge=1)
+    capture_epoch: int = Field(ge=1)
+    owner_endpoint_id: str = Field(min_length=1, max_length=160)
+    resume_attempt_id: str = Field(min_length=1, max_length=160)
+    cursor: V2MediaResumeCursorIngress | None = None
+
+
+class V2MediaAckIngress(BaseModel):
+    learner_id: str = Field(min_length=1, max_length=256)
+    capture_session_id: str = Field(min_length=1, max_length=160)
+    capture_consent_id: str = Field(min_length=1, max_length=160)
+    consent_generation: int = Field(ge=1)
+    route_epoch: int = Field(ge=1)
+    capture_epoch: int = Field(ge=1)
+    sequence: int = Field(ge=0)
+
+
 class CaptureSessionStartRequest(BaseModel):
     """Phone asks its already-paired PC to pull the *current* local RTSP server.
 
@@ -245,9 +424,78 @@ class CaptureSessionStartRequest(BaseModel):
     """
 
     session_id: str = Field(min_length=1, max_length=160)
+    # A mobile control-plan generation fences stale service work after the
+    # foreground service has rebuilt a capture plan.  It is deliberately not
+    # called a consent generation: this legacy capture route is not a v2
+    # consent/media-security handshake.
+    capture_generation: int = Field(ge=1)
     rtsp_port: int = Field(ge=1, le=65535)
     rtsp_path: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._~-]+$")
     source: Literal["PHONE_SCREEN"] = "PHONE_SCREEN"
+    capture_mode: CaptureMode = CaptureMode.FULL_CONTINUOUS
+    selected_packages: list[str] = Field(default_factory=list, max_length=32)
+    # v2 binding is present only for a capture explicitly started from the
+    # current Android consent snapshot. Legacy requests remain L0/RTSP-only.
+    learner_id: str | None = Field(default=None, min_length=1, max_length=256)
+    capture_consent_id: str | None = Field(default=None, min_length=1, max_length=160)
+    consent_generation: int | None = Field(default=None, ge=1)
+    capture_epoch: int | None = Field(default=None, ge=1)
+
+
+class ForegroundAppObservationRequest(BaseModel):
+    package_name: str | None = Field(default=None, min_length=1, max_length=240, pattern=r"^[A-Za-z0-9._-]+$")
+    observation_source: Literal["ACCESSIBILITY", "USAGE_STATS", "LOCAL_UI"]
+
+
+class AudioCapabilitySnapshotRequest(BaseModel):
+    """Technical audio telemetry for one authenticated capture control plan.
+
+    This stores what the handset observed.  It must not be treated as a v2
+    media admission or as proof that playback audio is semantically complete.
+    """
+
+    snapshot_id: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._~-]+$")
+    capture_generation: int = Field(ge=1)
+    capture_path: Literal["NONE", "PLAYBACK", "MICROPHONE", "MIXED"]
+    status: Literal["NOT_REQUESTED", "CAPTURE_ACTIVE_UNVERIFIED", "UNRESOLVED"]
+    application_package_id: str | None = Field(default=None, min_length=1, max_length=240, pattern=r"^[A-Za-z0-9._-]+$")
+    restriction: Literal[
+        "NONE", "APPLICATION_DISALLOWED", "DRM_PROTECTED", "SYSTEM_POLICY",
+        "PERMISSION_DENIED", "CAPTURE_FAILURE", "UNKNOWN",
+    ]
+    failure_code: str | None = Field(default=None, min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._:-]+$")
+    video_pts_start_us: int = Field(ge=0)
+    video_pts_end_us: int = Field(ge=0)
+    audio_pts_start_us: int | None = Field(default=None, ge=0)
+    audio_pts_end_us: int | None = Field(default=None, ge=0)
+    session_epoch_id: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._~-]+$")
+    clock_domain: Literal["ANDROID_ELAPSED_REALTIME_MONOTONIC"]
+    anchor_elapsed_realtime_ns: int = Field(ge=0)
+    sync_error_us: int | None = Field(default=None, ge=0)
+    recovery_attempt: int = Field(ge=0, le=1_000_000)
+
+    @model_validator(mode="after")
+    def _validate_media_ranges(self) -> "AudioCapabilitySnapshotRequest":
+        if self.video_pts_end_us < self.video_pts_start_us:
+            raise ValueError("capture_audio_video_pts_range_invalid")
+        if (self.audio_pts_start_us is None) != (self.audio_pts_end_us is None):
+            raise ValueError("capture_audio_pts_range_incomplete")
+        if self.audio_pts_start_us is not None and self.audio_pts_end_us is not None:
+            if self.audio_pts_end_us < self.audio_pts_start_us:
+                raise ValueError("capture_audio_pts_range_invalid")
+        if self.capture_path == "NONE":
+            if self.status != "NOT_REQUESTED" or self.audio_pts_start_us is not None or self.sync_error_us is not None:
+                raise ValueError("capture_audio_none_state_invalid")
+        elif self.status == "NOT_REQUESTED":
+            raise ValueError("capture_audio_requested_state_invalid")
+        elif self.status == "UNRESOLVED":
+            if self.restriction == "NONE":
+                raise ValueError("capture_audio_unresolved_requires_restriction")
+            if not self.failure_code:
+                raise ValueError("capture_audio_unresolved_requires_failure_code")
+        elif self.restriction != "NONE" or self.failure_code is not None:
+            raise ValueError("capture_audio_active_has_unresolved_claim")
+        return self
 
 
 @dataclass
@@ -259,8 +507,54 @@ class CaptureSession:
     state: str
     started_at: str
     process: subprocess.Popen[str] | None = None
+    stop_signal_file: Path | None = None
     stopped_at: str | None = None
     error: str | None = None
+    policy: CaptureSessionPolicy = CaptureSessionPolicy.create(CaptureMode.FULL_CONTINUOUS, ())
+    last_foreground_package: str | None = None
+    capture_output_state: CaptureOutputState = CaptureOutputState.STREAMING_ALLOWED
+    interruption_reason: str | None = None
+    preserve_completed_evidence: bool = True
+    capture_generation: int = 1
+    media_route_lease_id: str | None = None
+    media_route_epoch: int = 1
+    learner_id: str | None = None
+    capture_consent_id: str | None = None
+    consent_generation: int | None = None
+    # The media-security epoch belongs to the user's current capture consent.
+    # It is intentionally independent of ``capture_generation``, which only
+    # fences PC runner / RTSP recovery work.
+    authorization_capture_epoch: int | None = None
+    # True only for a session whose live data plane is the encrypted v2
+    # callback egress, rather than the retired RTSP pull runner.
+    direct_v2_egress: bool = False
+
+    @property
+    def audit_path(self) -> Path:
+        return self.output_dir.parent / f"{self.output_dir.name}.capture-audit.jsonl"
+
+    @property
+    def audio_telemetry_journal_path(self) -> Path:
+        """Append-only L0 telemetry adjacent to, never inside, runner output.
+
+        The journal may arrive before the runner creates ``output_dir``.  It
+        must therefore not create that directory and race the runner's unique
+        output ownership check.
+        """
+
+        return self.output_dir.parent / f".{self.output_dir.name}.audio-l0.jsonl"
+
+    def append_audit(self, event: dict[str, object]) -> None:
+        self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.audit_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def append_audio_telemetry(self, event: dict[str, object]) -> None:
+        self.audio_telemetry_journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.audio_telemetry_journal_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def response(self) -> dict[str, object]:
         return {
@@ -270,6 +564,19 @@ class CaptureSession:
             "started_at": self.started_at,
             "stopped_at": self.stopped_at,
             "error": self.error,
+            "capture_mode": self.policy.mode.value,
+            "selected_packages": list(self.policy.selected_packages),
+            "media_route_lease_id": self.media_route_lease_id,
+            "media_route_epoch": self.media_route_epoch,
+            "capture_epoch": self.authorization_capture_epoch or self.capture_generation,
+            "learner_id": self.learner_id,
+            "capture_consent_id": self.capture_consent_id,
+            "consent_generation": self.consent_generation,
+            "foreground_package": self.last_foreground_package,
+            "capture_output_state": self.capture_output_state.value,
+            "interruption_reason": self.interruption_reason,
+            "preserve_completed_evidence": self.preserve_completed_evidence,
+            "capture_generation": self.capture_generation,
         }
 
 
@@ -294,6 +601,109 @@ class LanCaptureSupervisor:
         authority = f"[{peer_host}]" if parsed.version == 6 else peer_host
         return f"rtsp://{authority}:{port}/{path}"
 
+    def _owner_lock_file(self, device_id: str) -> Path:
+        # This is a per-paired-device ownership lease, intentionally outside a
+        # unique session output directory.  A replacement gateway must see an
+        # older runner that is still settling the same phone's RTSP source.
+        digest = hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:24]
+        return self._settings.resolved_realtime_output_dir / ".capture-owners" / f"{digest}.json"
+
+    @staticmethod
+    def _process_is_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        if os.name == "nt":
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return ctypes.get_last_error() == 5
+            try:
+                exit_code = wintypes.DWORD()
+                return bool(
+                    kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                    and exit_code.value == 259
+                )
+            finally:
+                kernel32.CloseHandle(handle)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _owner_is_active(self, device_id: str) -> bool:
+        lock_file = self._owner_lock_file(device_id)
+        try:
+            payload = json.loads(lock_file.read_text(encoding="utf-8"))
+            pid = int(payload["pid"])
+        except (FileNotFoundError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            lock_file.unlink(missing_ok=True)
+            return False
+        if self._process_is_alive(pid):
+            return True
+        # A strongly killed runner cannot execute its cleanup finally.  Its
+        # stale lease is safe to remove only after its recorded PID is gone.
+        lock_file.unlink(missing_ok=True)
+        return False
+
+    def _spawn_runner_locked(self, session: CaptureSession) -> None:
+        command = [
+            sys.executable, str(self._settings.resolved_realtime_runner),
+            "--source", session.rtsp_url,
+            "--session-id", session.session_id,
+            "--capture-generation", str(session.capture_generation),
+            "--output-dir", str(session.output_dir),
+            "--audio-telemetry-journal", str(session.audio_telemetry_journal_path),
+            "--clock-host", session.rtsp_url.split("//", 1)[1].split(":", 1)[0].strip("[]"),
+            "--stop-signal-file", str(session.stop_signal_file),
+            "--supervisor-pid", str(os.getpid()),
+            "--capture-owner-lock-file", str(self._owner_lock_file(session.device_id)),
+        ]
+        environment = os.environ.copy()
+        if self._settings.gateway_ca_bundle is not None:
+            environment["REQUESTS_CA_BUNDLE"] = str(self._settings.gateway_ca_bundle)
+        session.output_dir.parent.mkdir(parents=True, exist_ok=True)
+        log = session.output_dir.parent / f"{session.output_dir.name}.supervisor.log"
+        handle = log.open("w", encoding="utf-8", newline="\n")
+        try:
+            session.process = subprocess.Popen(
+                command,
+                cwd=self._settings.resolved_realtime_runner.parent.parent,
+                env=environment,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        finally:
+            handle.close()
+        threading.Thread(target=self._watch, args=((session.device_id, session.session_id),), daemon=True, name=f"capture-{session.session_id}").start()
+
+    def _wait_for_previous_owner_then_start(self, key: tuple[str, str]) -> None:
+        deadline = time.monotonic() + 180.0
+        while self._owner_is_active(key[0]) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        with self._lock:
+            session = self._sessions.get(key)
+            if session is None or session.state == "STOPPING":
+                return
+            if self._owner_is_active(key[0]):
+                session.state = "FAILED_SETTLEMENT"
+                session.error = "previous_capture_owner_did_not_exit"
+                return
+            try:
+                self._spawn_runner_locked(session)
+            except OSError as error:
+                session.state = "FAILED_RUNTIME_NOT_READY"
+                session.error = f"runner_start_failed:{error.__class__.__name__}"
+
     def start(self, device_id: str, peer_host: str, request: CaptureSessionStartRequest) -> CaptureSession:
         key = (device_id, request.session_id)
         with self._lock:
@@ -301,40 +711,141 @@ class LanCaptureSupervisor:
             if existing is not None and existing.state in {"STARTING", "RUNNING", "STOPPING"}:
                 return existing
             rtsp_url = self._rtsp_url(peer_host, request.rtsp_port, request.rtsp_path)
+            policy = CaptureSessionPolicy.create(request.capture_mode, tuple(request.selected_packages))
             now = utc_now()
             output_dir = self._settings.resolved_realtime_output_dir / f"{request.session_id}-{now.strftime('%Y%m%dT%H%M%SZ')}"
-            session = CaptureSession(request.session_id, device_id, rtsp_url, output_dir, "STARTING", iso(now))
+            session = CaptureSession(
+                request.session_id, device_id, rtsp_url, output_dir, "STARTING", iso(now),
+                policy=policy, capture_generation=request.capture_generation,
+                media_route_lease_id=secrets.token_urlsafe(24),
+                learner_id=request.learner_id,
+                capture_consent_id=request.capture_consent_id,
+                consent_generation=request.consent_generation,
+                authorization_capture_epoch=request.capture_epoch,
+            )
+            # This signal deliberately lives *next to* the runner's output
+            # directory.  Creating it before a just-spawned runner reaches
+            # output.mkdir(exist_ok=False) must not itself make that runner
+            # fail with FileExistsError.
+            session.stop_signal_file = output_dir.parent / f".{output_dir.name}.stop-requested"
             self._sessions[key] = session
-            if not self._settings.gateway_public_url:
-                session.state = "FAILED_CONFIGURATION"
-                session.error = "gateway_public_url_required_for_candidate_return"
+            # The Android process still owns an RTSP encoder internally, but
+            # v2 egress consumes the encoded callbacks and sends encrypted
+            # frames over the paired HTTPS channel.  Do not start the former
+            # PC RTSP pull runner beside it: that route creates plaintext
+            # media work files and duplicates the same capture.
+            if not self._settings.legacy_rtsp_ingress_enabled:
+                if (
+                    not request.learner_id or not request.capture_consent_id or
+                    request.consent_generation is None or request.capture_epoch is None
+                ):
+                    session.state = "FAILED_LEGACY_RTSP_DISABLED"
+                    session.error = "v2_capture_binding_required"
+                else:
+                    session.state = "RUNNING"
+                    session.direct_v2_egress = True
                 return session
             if not self._settings.resolved_realtime_runner.is_file():
                 session.state = "FAILED_RUNTIME_NOT_READY"
                 session.error = "realtime_runner_missing"
                 return session
+            if self._owner_is_active(device_id):
+                session.state = "RECOVERING"
+                session.error = "previous_capture_owner_settling"
+                threading.Thread(
+                    target=self._wait_for_previous_owner_then_start,
+                    args=(key,),
+                    daemon=True,
+                    name=f"capture-recovery-{request.session_id}",
+                ).start()
+                return session
             try:
-                command = [
-                    sys.executable, str(self._settings.resolved_realtime_runner),
-                    "--source", rtsp_url,
-                    "--output-dir", str(output_dir),
-                    "--clock-host", peer_host,
-                    "--pc-outbox-gateway", self._settings.gateway_public_url,
-                    "--pc-outbox-device-id", device_id,
-                ]
-                environment = os.environ.copy()
-                if self._settings.gateway_ca_bundle is not None:
-                    environment["REQUESTS_CA_BUNDLE"] = str(self._settings.gateway_ca_bundle)
-                output_dir.parent.mkdir(parents=True, exist_ok=True)
-                log = output_dir.parent / f"{output_dir.name}.supervisor.log"
-                handle = log.open("w", encoding="utf-8", newline="\n")
-                session.process = subprocess.Popen(command, cwd=self._settings.resolved_realtime_runner.parent.parent, env=environment, stdout=handle, stderr=subprocess.STDOUT, text=True)
-                handle.close()
-                threading.Thread(target=self._watch, args=(key,), daemon=True, name=f"capture-{request.session_id}").start()
+                self._spawn_runner_locked(session)
             except OSError as error:
                 session.state = "FAILED_RUNTIME_NOT_READY"
                 session.error = f"runner_start_failed:{error.__class__.__name__}"
             return session
+
+    def media_route(self, device_id: str, session_id: str) -> tuple[str, int, int, str, str, int] | None:
+        """Return only a live PC-issued route lease, never caller-supplied route text."""
+        with self._lock:
+            session = self._sessions.get((device_id, session_id))
+            if (
+                session is None
+                or session.state not in {"STARTING", "RUNNING"}
+                or not session.media_route_lease_id
+                or not session.learner_id
+                or not session.capture_consent_id
+                or session.consent_generation is None
+                or session.authorization_capture_epoch is None
+            ):
+                return None
+            return (
+                session.media_route_lease_id, session.media_route_epoch, session.authorization_capture_epoch,
+                session.learner_id, session.capture_consent_id, session.consent_generation,
+            )
+
+    @contextmanager
+    def v2_media_ingress_permit(self, device_id: str, session_id: str) -> Iterator[None]:
+        """Serialize a selected-app gate change with encrypted-buffer persistence."""
+        with self._lock:
+            session = self._sessions.get((device_id, session_id))
+            if session is None or session.state not in {"STARTING", "RUNNING"}:
+                raise ValueError("media_capture_route_not_available")
+            if (
+                session.policy.mode == CaptureMode.SELECTED_APPS and
+                session.capture_output_state != CaptureOutputState.STREAMING_ALLOWED
+            ):
+                session.append_audit(
+                    {
+                        "event_type": "V2_MEDIA_FRAGMENT_REJECTED_BY_OUTPUT_GATE",
+                        "observed_at": iso(utc_now()),
+                        "session_id": session.session_id,
+                        "device_id": session.device_id,
+                        "capture_output_state": session.capture_output_state.value,
+                    }
+                )
+                raise ValueError("media_capture_output_blocked")
+            yield
+
+    def observe_foreground_app(
+        self,
+        device_id: str,
+        session_id: str,
+        package_name: str | None,
+        observation_source: str = "DEVICE_REPORTED",
+    ) -> CaptureOutputDecision:
+        """Record the device-observed foreground app without ending capture.
+
+        In ``SELECTED_APPS`` mode the Android sender consumes the returned
+        decision to stop emitting media while an unselected application is
+        foreground.  The capture session itself remains authorized and alive,
+        so returning to a selected application does not require another
+        MediaProjection consent prompt.
+        """
+        with self._lock:
+            session = self._sessions.get((device_id, session_id))
+            if session is None:
+                raise KeyError("capture_session_not_found")
+            if session.state not in {"STARTING", "RUNNING"}:
+                raise ValueError("capture_session_not_active")
+            session.last_foreground_package = package_name
+            decision = session.policy.decide(package_name)
+            session.capture_output_state = decision.output_state
+            session.append_audit(
+                {
+                    "event_type": "FOREGROUND_APP_OBSERVED",
+                    "observed_at": iso(utc_now()),
+                    "session_id": session.session_id,
+                    "device_id": session.device_id,
+                    "capture_mode": session.policy.mode.value,
+                    "foreground_package": package_name,
+                    "observation_source": observation_source,
+                    "capture_output_state": decision.output_state.value,
+                    "decision_reason": decision.reason,
+                }
+            )
+            return decision
 
     def _watch(self, key: tuple[str, str]) -> None:
         with self._lock:
@@ -368,26 +879,120 @@ class LanCaptureSupervisor:
         with self._lock:
             if session.state == "STOPPING":
                 session.state = "STOPPED"
-            elif session.state == "FAILED_RUNTIME_NOT_READY":
+            elif session.state.startswith("FAILED"):
                 pass
             elif code == 0:
-                session.state = "COMPLETED"
+                # Production capture is unbounded.  A clean runner exit with
+                # no user stop signal therefore means the PC observed a source
+                # disconnect (for example an Android task clear).  Already
+                # sealed fragments remain evidence; only the open tail is
+                # incomplete.
+                interruption = session.policy.interruption_outcome("PC_OBSERVED_SOURCE_DISCONNECT")
+                session.state = interruption.session_state
+                session.interruption_reason = interruption.reason
+                session.preserve_completed_evidence = interruption.preserve_completed_evidence
             else:
                 session.state = "FAILED"
                 session.error = f"runner_exit_{code}"
             session.stopped_at = iso(utc_now())
+
+    def _request_stop_locked(self, session: CaptureSession) -> None:
+        if session.state in {"RUNNING", "STARTING", "RECOVERING"}:
+            if session.direct_v2_egress:
+                # Direct v2 ingress has no child runner or tail to settle.
+                # Stop the control session immediately; already encrypted
+                # fragments remain in the private buffer for audit/resume.
+                session.state = "STOPPED"
+                session.stopped_at = iso(utc_now())
+                return
+            # Phone stops its RTSP server first; the pipeline then closes
+            # naturally and flushes its tail.  Do not kill a live runner
+            # here, because that would discard its final evidence window.
+            session.state = "STOPPING"
+            if session.stop_signal_file is not None:
+                session.stop_signal_file.parent.mkdir(parents=True, exist_ok=True)
+                session.stop_signal_file.touch()
+
+    @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+        """Last-resort cleanup for a runner and every lane it owns.
+
+        `Popen.terminate()` kills only the Python runner on Windows.  Its OCR,
+        ASR, VLM, ingress and publisher descendants would then survive without
+        a supervisor.  A tail timeout is an explicit failed settlement, so its
+        complete process tree must be removed before the next Android recovery
+        is allowed to create another worker.
+        """
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+        else:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
     def stop(self, device_id: str, session_id: str) -> CaptureSession | None:
         with self._lock:
             session = self._sessions.get((device_id, session_id))
             if session is None:
                 return None
-            if session.state in {"RUNNING", "STARTING"}:
-                # Phone stops its RTSP server first; the pipeline then closes
-                # naturally and flushes its tail.  Do not kill a live runner
-                # here, because that would discard its final evidence window.
-                session.state = "STOPPING"
+            self._request_stop_locked(session)
             return session
+
+    def revoke_device(self, device_id: str) -> tuple[CaptureSession, ...]:
+        """Stop every non-terminal capture owned by a revoked paired device.
+
+        Revocation must also stop a ``RECOVERING`` session: otherwise its
+        delayed owner-lease recovery thread could start a new runner after the
+        credential has been invalidated.  This uses the normal stop signal so
+        the runner can seal its final window; it intentionally never deletes
+        completed evidence.
+        """
+
+        with self._lock:
+            sessions = tuple(
+                session for (owner_device_id, _), session in self._sessions.items()
+                if owner_device_id == device_id
+            )
+            for session in sessions:
+                self._request_stop_locked(session)
+            return sessions
+
+    def shutdown(self, grace_seconds: float = 20.0) -> None:
+        """Stop owned runners before the gateway process exits.
+
+        An in-memory supervisor restart used to orphan its child runners on
+        Windows.  A recovered Android client would then start another worker
+        for the same RTSP source, duplicating analysis.  Shutdown therefore
+        writes the same explicit stop signal as the phone path, waits for the
+        tail window to settle, then records a failure if a runner cannot exit.
+        """
+        with self._lock:
+            sessions = tuple(self._sessions.values())
+            for session in sessions:
+                self._request_stop_locked(session)
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        for session in sessions:
+            process = session.process
+            if process is None or process.poll() is not None:
+                continue
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                self._terminate_process_tree(process)
+                with self._lock:
+                    session.state = "FAILED_SETTLEMENT"
+                    session.error = "gateway_shutdown_tail_timeout"
 
     def get(self, device_id: str, session_id: str) -> CaptureSession | None:
         with self._lock:
@@ -494,6 +1099,34 @@ class GatewayStore:
                     paired_at TEXT NOT NULL,
                     revoked_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS v2_device_credentials (
+                    device_id TEXT PRIMARY KEY,
+                    public_key_spki_der BLOB NOT NULL,
+                    public_key_sha256 TEXT NOT NULL,
+                    credential_generation INTEGER NOT NULL,
+                    enrolled_at TEXT NOT NULL,
+                    rotated_at TEXT NOT NULL,
+                    revoked_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS v2_access_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    device_id TEXT NOT NULL,
+                    credential_generation INTEGER NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    FOREIGN KEY(device_id) REFERENCES v2_device_credentials(device_id)
+                );
+                CREATE INDEX IF NOT EXISTS v2_access_tokens_device
+                    ON v2_access_tokens(device_id, credential_generation, expires_at);
+                CREATE TABLE IF NOT EXISTS v2_device_proof_nonces (
+                    device_id TEXT NOT NULL,
+                    nonce TEXT NOT NULL,
+                    used_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    PRIMARY KEY(device_id, nonce),
+                    FOREIGN KEY(device_id) REFERENCES v2_device_credentials(device_id)
+                );
                 CREATE TABLE IF NOT EXISTS outbox (
                     device_id TEXT NOT NULL,
                     message_id TEXT NOT NULL,
@@ -505,11 +1138,28 @@ class GatewayStore:
                     lease_token TEXT,
                     lease_until TEXT,
                     delivery_count INTEGER NOT NULL DEFAULT 0,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
                     last_error TEXT,
                     acknowledged_at TEXT,
                     PRIMARY KEY(device_id, message_id)
                 );
                 CREATE INDEX IF NOT EXISTS outbox_delivery ON outbox(device_id, state, expires_at, lease_until, created_at);
+                CREATE TABLE IF NOT EXISTS outbox_delivery_rejections (
+                    rejection_id TEXT PRIMARY KEY,
+                    device_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    delivery_token TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    retryable INTEGER NOT NULL CHECK(retryable IN (0, 1)),
+                    retry_count INTEGER NOT NULL,
+                    rejected_at TEXT NOT NULL,
+                    next_attempt_at TEXT,
+                    resulting_state TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS outbox_delivery_rejections_message
+                    ON outbox_delivery_rejections(device_id, message_id, rejected_at);
                 CREATE TABLE IF NOT EXISTS agent_resources (
                     device_id TEXT NOT NULL,
                     resource_id TEXT NOT NULL,
@@ -551,8 +1201,83 @@ class GatewayStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(device_id, entity_kind, entity_id)
                 );
+                CREATE TABLE IF NOT EXISTS capture_audio_capability_snapshots (
+                    device_id TEXT NOT NULL,
+                    capture_session_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    capture_generation INTEGER NOT NULL,
+                    capture_path TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    application_package_id TEXT,
+                    restriction TEXT NOT NULL,
+                    failure_code TEXT,
+                    video_pts_start_us INTEGER NOT NULL,
+                    video_pts_end_us INTEGER NOT NULL,
+                    audio_pts_start_us INTEGER,
+                    audio_pts_end_us INTEGER,
+                    session_epoch_id TEXT NOT NULL,
+                    clock_domain TEXT NOT NULL,
+                    anchor_elapsed_realtime_ns INTEGER NOT NULL,
+                    sync_error_us INTEGER,
+                    recovery_attempt INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    admission TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    PRIMARY KEY(device_id, capture_session_id, snapshot_id)
+                );
+                CREATE INDEX IF NOT EXISTS capture_audio_capability_session_cursor
+                    ON capture_audio_capability_snapshots(device_id, capture_session_id, capture_generation, received_at);
                 """
             )
+            self._add_outbox_state_columns(connection)
+            self._add_capture_audio_capability_columns(connection)
+            self._quarantine_legacy_delivery_rows(connection)
+
+    @staticmethod
+    def _add_outbox_state_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(outbox)").fetchall()
+        }
+        for name, sql_type in {
+            "retry_count": "INTEGER NOT NULL DEFAULT 0",
+            "next_attempt_at": "TEXT",
+        }.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE outbox ADD COLUMN {name} {sql_type}")
+
+    @staticmethod
+    def _add_capture_audio_capability_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(capture_audio_capability_snapshots)").fetchall()
+        }
+        if columns and "failure_code" not in columns:
+            connection.execute("ALTER TABLE capture_audio_capability_snapshots ADD COLUMN failure_code TEXT")
+
+    @staticmethod
+    def _quarantine_legacy_delivery_rows(connection: sqlite3.Connection) -> None:
+        """Make historic v1 delivery rows auditable but permanently non-routable."""
+
+        rows = connection.execute(
+            "SELECT device_id, message_id, payload_json FROM outbox WHERE state IN ('PENDING', 'LEASED')"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("schema_version") == "mobile_result_message.v1":
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET state='LEGACY_READ_ONLY', lease_token=NULL, lease_until=NULL,
+                        last_error='legacy_v1_delivery_disabled'
+                    WHERE device_id=? AND message_id=?
+                    """,
+                    (row["device_id"], row["message_id"]),
+                )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -598,12 +1323,291 @@ class GatewayStore:
                 return str(row["device_id"])
         return None
 
+    @staticmethod
+    def _issue_v2_access_token(
+        connection: sqlite3.Connection,
+        *,
+        device_id: str,
+        credential_generation: int,
+        now: datetime,
+    ) -> str:
+        token = secrets.token_urlsafe(32)
+        connection.execute(
+            """
+            INSERT INTO v2_access_tokens(token_hash, device_id, credential_generation, issued_at, expires_at, revoked_at)
+            VALUES (?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                sha256(token), device_id, credential_generation, iso(now),
+                iso(now + timedelta(seconds=V2_ACCESS_TOKEN_TTL_SECONDS)),
+            ),
+        )
+        return token
+
+    def enroll_v2_device_credential(self, device_id: str, public_key_spki_b64: str) -> tuple[str, int]:
+        """Replace any old v2 key with a new, short-token credential generation."""
+
+        public_key_der = _decode_v2_device_public_key(public_key_spki_b64)
+        now = utc_now()
+        with self._lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT credential_generation FROM v2_device_credentials WHERE device_id=?", (device_id,)
+                ).fetchone()
+                generation = 1 if existing is None else int(existing["credential_generation"]) + 1
+                connection.execute(
+                    "UPDATE v2_access_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                    (iso(now), device_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO v2_device_credentials(
+                        device_id, public_key_spki_der, public_key_sha256, credential_generation,
+                        enrolled_at, rotated_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(device_id) DO UPDATE SET
+                        public_key_spki_der=excluded.public_key_spki_der,
+                        public_key_sha256=excluded.public_key_sha256,
+                        credential_generation=excluded.credential_generation,
+                        rotated_at=excluded.rotated_at,
+                        revoked_at=NULL
+                    """,
+                    (device_id, public_key_der, sha256(public_key_der), generation, iso(now), iso(now)),
+                )
+                token = self._issue_v2_access_token(
+                    connection, device_id=device_id, credential_generation=generation, now=now
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return token, generation
+
+    def v2_authenticated_device(self, token: str) -> tuple[str, int] | None:
+        """Resolve an unexpired, unrevoked v2 short token without extending it."""
+
+        now = utc_now()
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT token.device_id, token.credential_generation, token.expires_at,
+                       credential.credential_generation AS current_generation, credential.revoked_at
+                FROM v2_access_tokens AS token
+                JOIN v2_device_credentials AS credential ON credential.device_id=token.device_id
+                WHERE token.token_hash=? AND token.revoked_at IS NULL
+                """,
+                (sha256(token),),
+            ).fetchone()
+        if (
+            row is None
+            or row["revoked_at"] is not None
+            or int(row["credential_generation"]) != int(row["current_generation"])
+            or parse_time(str(row["expires_at"])) <= now
+        ):
+            return None
+        return str(row["device_id"]), int(row["credential_generation"])
+
+    def v2_device_public_key(self, device_id: str) -> ec.EllipticCurvePublicKey | None:
+        """Return only the enrolled public key for an active v2 credential."""
+
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT public_key_spki_der FROM v2_device_credentials
+                WHERE device_id=? AND revoked_at IS NULL
+                """,
+                (device_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            key = serialization.load_der_public_key(bytes(row["public_key_spki_der"]))
+        except (TypeError, ValueError):
+            return None
+        return key if isinstance(key, ec.EllipticCurvePublicKey) and isinstance(key.curve, ec.SECP256R1) else None
+
+    def rotate_v2_access_token(
+        self,
+        *,
+        device_id: str,
+        timestamp_ms: int,
+        nonce: str,
+        signature_b64: str,
+    ) -> tuple[str, int]:
+        """Rotate a short token only after a fresh, non-replayable key proof."""
+
+        now = utc_now()
+        now_ms = int(now.timestamp() * 1_000)
+        if abs(now_ms - timestamp_ms) > V2_PROOF_CLOCK_SKEW_MS:
+            raise ValueError("v2_device_proof_timestamp_out_of_window")
+        try:
+            signature = base64.b64decode(signature_b64, validate=True)
+            payload = build_v2_device_proof_payload(
+                method="POST",
+                path="/api/v2/device-credentials/refresh",
+                device_id=device_id,
+                timestamp_ms=timestamp_ms,
+                nonce=nonce,
+                body_sha256=None,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("v2_device_proof_invalid") from error
+        with self._lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                credential = connection.execute(
+                    """
+                    SELECT public_key_spki_der, credential_generation, revoked_at
+                    FROM v2_device_credentials WHERE device_id=?
+                    """,
+                    (device_id,),
+                ).fetchone()
+                if credential is None or credential["revoked_at"] is not None:
+                    raise ValueError("v2_device_credential_unavailable")
+                try:
+                    key = serialization.load_der_public_key(bytes(credential["public_key_spki_der"]))
+                    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+                        raise ValueError("v2_device_credential_invalid")
+                    key.verify(signature, payload, ec.ECDSA(hashes.SHA256()))
+                except InvalidSignature as error:
+                    raise ValueError("v2_device_proof_signature_invalid") from error
+                except (TypeError, ValueError) as error:
+                    raise ValueError("v2_device_credential_invalid") from error
+                connection.execute(
+                    "DELETE FROM v2_device_proof_nonces WHERE expires_at <= ?", (iso(now),)
+                )
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO v2_device_proof_nonces(device_id, nonce, used_at, expires_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (device_id, nonce, iso(now), iso(now + timedelta(seconds=V2_PROOF_NONCE_TTL_SECONDS))),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValueError("v2_device_proof_replayed") from error
+                generation = int(credential["credential_generation"])
+                connection.execute(
+                    "UPDATE v2_access_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                    (iso(now), device_id),
+                )
+                token = self._issue_v2_access_token(
+                    connection, device_id=device_id, credential_generation=generation, now=now
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return token, generation
+
+    def revoke_v2_device_credential(self, device_id: str) -> None:
+        now = iso(utc_now())
+        with self._lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "UPDATE v2_device_credentials SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                    (now, device_id),
+                )
+                connection.execute(
+                    "UPDATE v2_access_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                    (now, device_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET state='REVOKED', lease_token=NULL, lease_until=NULL,
+                        next_attempt_at=NULL, last_error='device_revoked'
+                    WHERE device_id=? AND state IN ('PENDING', 'LEASED', 'RETRY_WAIT')
+                    """,
+                    (device_id,),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
     def revoke(self, device_id: str) -> None:
         with self._lock, self._connection() as connection:
+            now = iso(utc_now())
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "UPDATE devices SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
-                (iso(utc_now()), device_id),
+                (now, device_id),
             )
+            connection.execute(
+                "UPDATE v2_device_credentials SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                (now, device_id),
+            )
+            connection.execute(
+                "UPDATE v2_access_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                (now, device_id),
+            )
+            connection.execute(
+                """
+                UPDATE outbox
+                SET state='REVOKED', lease_token=NULL, lease_until=NULL,
+                    next_attempt_at=NULL, last_error='device_revoked'
+                WHERE device_id=? AND state IN ('PENDING', 'LEASED', 'RETRY_WAIT')
+                """,
+                (device_id,),
+            )
+            connection.execute("COMMIT")
+
+    def record_capture_audio_capability(
+        self,
+        device_id: str,
+        capture_session_id: str,
+        request: AudioCapabilitySnapshotRequest,
+    ) -> str:
+        """Persist an immutable phone observation with retry-safe identity.
+
+        Capture audio telemetry is intentionally stored independently from the
+        v2 package/outbox.  Its only admission value is L0 technical evidence;
+        no caller can convert it into L1 eligibility through this endpoint.
+        """
+
+        payload = request.model_dump(mode="json")
+        payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        payload_hash = sha256(payload_json)
+        now = iso(utc_now())
+        with self._lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT payload_sha256 FROM capture_audio_capability_snapshots
+                WHERE device_id=? AND capture_session_id=? AND snapshot_id=?
+                """,
+                (device_id, capture_session_id, request.snapshot_id),
+            ).fetchone()
+            if existing is not None:
+                connection.execute("COMMIT")
+                if hmac.compare_digest(str(existing["payload_sha256"]), payload_hash):
+                    return "DUPLICATE"
+                raise ValueError("capture_audio_snapshot_id_conflict")
+            connection.execute(
+                """
+                INSERT INTO capture_audio_capability_snapshots(
+                    device_id, capture_session_id, snapshot_id, capture_generation,
+                    capture_path, status, application_package_id, restriction, failure_code,
+                    video_pts_start_us, video_pts_end_us, audio_pts_start_us, audio_pts_end_us,
+                    session_epoch_id, clock_domain, anchor_elapsed_realtime_ns, sync_error_us,
+                    recovery_attempt, payload_json, payload_sha256, admission, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    device_id, capture_session_id, request.snapshot_id, request.capture_generation,
+                    request.capture_path, request.status, request.application_package_id, request.restriction, request.failure_code,
+                    request.video_pts_start_us, request.video_pts_end_us,
+                    request.audio_pts_start_us, request.audio_pts_end_us,
+                    request.session_epoch_id, request.clock_domain, request.anchor_elapsed_realtime_ns,
+                    request.sync_error_us, request.recovery_attempt, payload_json, payload_hash,
+                    "L0_ONLY_NO_V2_CONSENT", now,
+                ),
+            )
+            connection.execute("COMMIT")
+        return "CAPTURE_AUDIO_TELEMETRY_ACCEPTED"
 
     def enqueue(self, request: OutboxIngressRequest) -> str:
         payload_json = json.dumps(request.payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -622,7 +1626,7 @@ class GatewayStore:
                     return "DUPLICATE"
                 raise ValueError("mobile_message_id_payload_conflict")
             pending = connection.execute(
-                "SELECT COUNT(*) FROM outbox WHERE device_id=? AND state IN ('PENDING','LEASED') AND expires_at > ?",
+                "SELECT COUNT(*) FROM outbox WHERE device_id=? AND state IN ('PENDING','LEASED','RETRY_WAIT') AND expires_at > ?",
                 (request.device_id, iso(now)),
             ).fetchone()[0]
             if pending >= MAX_OUTBOX_PER_DEVICE:
@@ -639,9 +1643,19 @@ class GatewayStore:
         leased: list[dict[str, object]] = []
         with self._lock, self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # A restored or externally recovered SQLite file must not revive a
+            # v1 delivery after process startup.
+            self._quarantine_legacy_delivery_rows(connection)
             connection.execute(
-                "UPDATE outbox SET state='EXPIRED', last_error='ttl_elapsed' WHERE device_id=? AND state IN ('PENDING','LEASED') AND expires_at <= ?",
+                "UPDATE outbox SET state='EXPIRED', last_error='ttl_elapsed' WHERE device_id=? AND state IN ('PENDING','LEASED','RETRY_WAIT') AND expires_at <= ?",
                 (device_id, iso(now)),
+            )
+            connection.execute(
+                """
+                UPDATE outbox SET state='PENDING', next_attempt_at=NULL
+                WHERE device_id=? AND state='RETRY_WAIT' AND next_attempt_at <= ? AND expires_at > ?
+                """,
+                (device_id, iso(now), iso(now)),
             )
             rows = connection.execute(
                 """SELECT * FROM outbox WHERE device_id=? AND expires_at > ? AND
@@ -663,23 +1677,60 @@ class GatewayStore:
         return leased
 
     def acknowledge(self, device_id: str, message_id: str, delivery_token: str) -> bool:
+        now = iso(utc_now())
         with self._lock, self._connection() as connection:
             updated = connection.execute(
                 """UPDATE outbox SET state='ACKED', acknowledged_at=?, lease_token=NULL, lease_until=NULL
-                   WHERE device_id=? AND message_id=? AND state='LEASED' AND lease_token=?""",
-                (iso(utc_now()), device_id, message_id, delivery_token),
+                   WHERE device_id=? AND message_id=? AND state='LEASED' AND lease_token=? AND lease_until > ?""",
+                (now, device_id, message_id, delivery_token, now),
             ).rowcount
         return updated == 1
 
     def reject(self, device_id: str, message_id: str, delivery_token: str, reason: str, retryable: bool) -> bool:
-        state = "PENDING" if retryable else "DEAD_LETTER"
+        now_value = utc_now()
+        now = iso(now_value)
         with self._lock, self._connection() as connection:
-            updated = connection.execute(
-                """UPDATE outbox SET state=?, last_error=?, lease_token=NULL, lease_until=NULL
-                   WHERE device_id=? AND message_id=? AND state='LEASED' AND lease_token=?""",
-                (state, reason, device_id, message_id, delivery_token),
-            ).rowcount
-        return updated == 1
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload_sha256, retry_count FROM outbox
+                WHERE device_id=? AND message_id=? AND state='LEASED' AND lease_token=? AND lease_until > ?
+                """,
+                (device_id, message_id, delivery_token, now),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                return False
+            retry_count = int(row["retry_count"]) + 1
+            can_retry = retryable and retry_count < MAX_DELIVERY_RETRIES
+            delay_seconds = min(
+                INITIAL_DELIVERY_RETRY_DELAY_SECONDS * (2 ** (retry_count - 1)),
+                MAX_DELIVERY_RETRY_DELAY_SECONDS,
+            )
+            next_attempt_at = iso(now_value + timedelta(seconds=delay_seconds)) if can_retry else None
+            state = "RETRY_WAIT" if can_retry else "DEAD_LETTER"
+            connection.execute(
+                """
+                UPDATE outbox
+                SET state=?, last_error=?, retry_count=?, next_attempt_at=?, lease_token=NULL, lease_until=NULL
+                WHERE device_id=? AND message_id=?
+                """,
+                (state, reason, retry_count, next_attempt_at, device_id, message_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO outbox_delivery_rejections(
+                    rejection_id, device_id, message_id, delivery_token, payload_sha256,
+                    reason, retryable, retry_count, rejected_at, next_attempt_at, resulting_state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex, device_id, message_id, delivery_token, str(row["payload_sha256"]),
+                    reason, int(retryable), retry_count, now, next_attempt_at, state,
+                ),
+            )
+            connection.execute("COMMIT")
+        return True
 
     def append_graph_event(
         self,
@@ -849,9 +1900,32 @@ class GatewayStore:
 
 
 def build_app(settings: GatewaySettings) -> FastAPI:
-    app = FastAPI(title="知行智学本地网关", version="1.1")
     store = GatewayStore(settings.resolved_database_path)
     capture_supervisor = LanCaptureSupervisor(settings)
+    media_security = MediaSecurityAuthority(
+        device_public_key_for=store.v2_device_public_key,
+        capture_route_for=capture_supervisor.media_route,
+        now_ms=lambda: int(utc_now().timestamp() * 1_000),
+        session_ttl_ms=V2_MEDIA_SECURITY_SESSION_TTL_MS,
+    )
+    media_buffer = PcMediaBuffer(settings.artifact_dir / "media-buffer")
+    # The v2 decoder has no candidate-card, L1 or notification dependency.
+    # It receives a frame only after the encrypted original is fsync'ed in the
+    # private buffer and writes technical L0 facts/failures independently.
+    v2_l0_processor = V2L0MediaProcessor(
+        root=settings.artifact_dir / "v2-l0-runtime",
+        semantic_ledger_path=settings.artifact_dir / "v2-l0-semantic.sqlite3",
+    )
+    v2_l0_dispatcher = V2L0ProcessingDispatcher(v2_l0_processor)
+    app = FastAPI(title="知行智学本地网关", version="1.1")
+
+    @app.on_event("shutdown")
+    def stop_capture_workers_before_gateway_exit() -> None:
+        # A shutdown must preserve the ciphertext already sealed by the
+        # ingress handler.  L0 is optional downstream work, so it receives a
+        # bounded best-effort join and can never hold the gateway open.
+        v2_l0_dispatcher.close(timeout=0.5)
+        capture_supervisor.shutdown()
     pairing_limiter = PairingRateLimiter()
     nearby_pairing = NearbyPairingWindow()
     # The launcher uses this narrowly-scoped supplier for UDP discovery.  It
@@ -859,6 +1933,11 @@ def build_app(settings: GatewaySettings) -> FastAPI:
     # code or an authenticated device token.
     app.state.nearby_pairing = nearby_pairing
     app.state.gateway_settings = settings
+    app.state.capture_supervisor = capture_supervisor
+    app.state.media_security = media_security
+    app.state.media_buffer = media_buffer
+    app.state.v2_l0_processor = v2_l0_processor
+    app.state.v2_l0_dispatcher = v2_l0_dispatcher
     runs: dict[str, AgentRun] = {}
     client_requests: dict[tuple[str, str], str] = {}
     settings.artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -871,9 +1950,251 @@ def build_app(settings: GatewaySettings) -> FastAPI:
             raise HTTPException(401, detail={"code": "mobile_auth_invalid_or_expired"})
         return device_id
 
+    def require_v2_device_credential(authorization: str | None = Header(default=None)) -> tuple[str, int]:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(401, detail={"code": "v2_device_access_token_required"})
+        authenticated = store.v2_authenticated_device(authorization.removeprefix("Bearer "))
+        if authenticated is None:
+            raise HTTPException(401, detail={"code": "v2_device_access_token_invalid_or_expired"})
+        return authenticated
+
     def require_ingress_key(x_zhixing_ingress_key: str | None = Header(default=None)) -> None:
         if x_zhixing_ingress_key is None or not hmac.compare_digest(x_zhixing_ingress_key, settings.ingress_key):
             raise HTTPException(401, detail={"code": "pc_ingress_auth_invalid"})
+
+    @app.post("/api/v2/device-credentials/enroll")
+    async def enroll_v2_device_credential(
+        request: V2DeviceCredentialEnrollmentRequest,
+        http_request: Request,
+    ) -> dict[str, object]:
+        client_host = http_request.client.host if http_request.client is not None else "unknown"
+        rate_key = f"{client_host}:{request.device_id}:v2"
+        if not pairing_limiter.allow(rate_key):
+            raise HTTPException(429, detail={"code": "pairing_rate_limited"})
+        if not (
+            hmac.compare_digest(request.pairing_token, settings.pairing_code)
+            or nearby_pairing.accepts(request.pairing_token)
+        ):
+            pairing_limiter.record_failure(rate_key)
+            raise HTTPException(403, detail={"code": "pairing_code_invalid"})
+        try:
+            token, generation = store.enroll_v2_device_credential(
+                request.device_id, request.public_key_spki_b64
+            )
+        except ValueError as error:
+            raise HTTPException(422, detail={"code": str(error)}) from error
+        pairing_limiter.clear(rate_key)
+        return {
+            "device_id": request.device_id,
+            "credential_generation": generation,
+            "access_token": token,
+            "expires_in_seconds": V2_ACCESS_TOKEN_TTL_SECONDS,
+        }
+
+    @app.post("/api/v2/device-credentials/refresh")
+    async def refresh_v2_device_credential(
+        x_zhixing_device_id: str | None = Header(default=None),
+        x_zhixing_device_timestamp_ms: str | None = Header(default=None),
+        x_zhixing_device_nonce: str | None = Header(default=None),
+        x_zhixing_device_signature: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        if (
+            not x_zhixing_device_id
+            or not x_zhixing_device_timestamp_ms
+            or not x_zhixing_device_nonce
+            or not x_zhixing_device_signature
+        ):
+            raise HTTPException(401, detail={"code": "v2_device_proof_required"})
+        try:
+            timestamp_ms = int(x_zhixing_device_timestamp_ms)
+            token, generation = store.rotate_v2_access_token(
+                device_id=x_zhixing_device_id,
+                timestamp_ms=timestamp_ms,
+                nonce=x_zhixing_device_nonce,
+                signature_b64=x_zhixing_device_signature,
+            )
+        except ValueError as error:
+            code = str(error)
+            status = 409 if code == "v2_device_proof_replayed" else 401
+            raise HTTPException(status, detail={"code": code}) from error
+        return {
+            "device_id": x_zhixing_device_id,
+            "credential_generation": generation,
+            "access_token": token,
+            "expires_in_seconds": V2_ACCESS_TOKEN_TTL_SECONDS,
+        }
+
+    @app.get("/api/v2/device-credentials/me")
+    async def v2_device_credential_status(
+        authenticated: tuple[str, int] = Depends(require_v2_device_credential),
+    ) -> dict[str, object]:
+        return {"device_id": authenticated[0], "credential_generation": authenticated[1]}
+
+    @app.post("/api/v2/media-sessions", status_code=201)
+    async def open_v2_media_security_session(
+        request: V2MediaSecurityOpenIngress,
+        authenticated: tuple[str, int] = Depends(require_v2_device_credential),
+    ) -> dict[str, object]:
+        if not hmac.compare_digest(request.device_id, authenticated[0]):
+            raise HTTPException(403, detail={"code": "media_device_mismatch"})
+        try:
+            opened = media_security.open(
+                MediaSecurityOpenRequest(
+                    device_id=request.device_id,
+                    learner_id=request.learner_id,
+                    capture_session_id=request.capture_session_id,
+                    capture_consent_id=request.capture_consent_id,
+                    consent_generation=request.consent_generation,
+                    route_lease_id=request.route_lease_id,
+                    route_epoch=request.route_epoch,
+                    capture_epoch=request.capture_epoch,
+                    client_ephemeral_spki_b64=request.client_ephemeral_spki_b64,
+                    signature_b64=request.signature_b64,
+                )
+            )
+        except ValueError as error:
+            code = str(error)
+            status = 401 if code in {
+                "media_device_credential_unavailable", "media_security_open_signature_invalid"
+            } else 409 if code in {"media_capture_route_not_available", "media_capture_route_mismatch"} else 422
+            raise HTTPException(status, detail={"code": code}) from error
+        return asdict(opened)
+
+    @app.post("/api/v2/media-sessions/{media_security_session_id}/fragments", status_code=202)
+    async def ingest_v2_media_fragment(
+        media_security_session_id: str,
+        request: V2MediaFragmentIngress,
+        authenticated: tuple[str, int] = Depends(require_v2_device_credential),
+    ) -> dict[str, object]:
+        try:
+            accepted = media_security.accept_fragment(
+                media_security_session_id,
+                MediaFragmentEnvelope(
+                    header=MediaFragmentHeader(**request.header.model_dump()),
+                    nonce_b64=request.nonce_b64,
+                    ciphertext_b64=request.ciphertext_b64,
+                ),
+                authenticated_device_id=authenticated[0],
+                plaintext_validator=v2_l0_processor.validate_plaintext,
+            )
+        except (ValueError, V2L0MediaProcessorError) as error:
+            code = str(error)
+            status = 404 if code == "media_security_session_not_available" else 409
+            raise HTTPException(status, detail={"code": code}) from error
+        if request.capture_epoch != accepted.header.capture_epoch:
+            raise HTTPException(409, detail={"code": "media_fragment_capture_epoch_mismatch"})
+        try:
+            with capture_supervisor.v2_media_ingress_permit(
+                authenticated[0], accepted.header.capture_session_id
+            ):
+                buffered = media_buffer.persist(
+                    accepted, capture_epoch=request.capture_epoch, device_id=authenticated[0]
+                )
+        except ValueError as error:
+            code = str(error)
+            status = 409 if code in {
+                "media_buffer_revoked", "media_buffer_idempotency_conflict",
+                "media_capture_route_not_available", "media_capture_output_blocked",
+            } else 422
+            raise HTTPException(status, detail={"code": code}) from error
+        # The receipt boundary is the encrypted blob plus metadata fsync.  L0
+        # decode/ledger work remains ordered but runs beyond that boundary:
+        # a slow decoder must not fill Android's sender queue or induce a
+        # legacy fallback.  Queue pressure is itself an auditable L0 state.
+        l0_receipt = v2_l0_dispatcher.submit(accepted, buffered)
+        return {
+            "sequence": accepted.header.sequence,
+            "media_sha256": accepted.header.media_sha256,
+            "buffered": True,
+            "buffer_fragment_id": buffered.fragment_id,
+            "buffer_local_storage_hash": buffered.local_storage_hash,
+            "l0_state": l0_receipt.state,
+            "l0_fact_id": None,
+        }
+
+    @app.post("/api/v2/media-sessions/{media_security_session_id}/resume")
+    async def resume_v2_media_buffer(
+        media_security_session_id: str,
+        request: V2MediaResumeIngress,
+        authenticated: tuple[str, int] = Depends(require_v2_device_credential),
+    ) -> dict[str, object]:
+        try:
+            binding = media_security.require_session(
+                media_security_session_id, authenticated_device_id=authenticated[0]
+            )
+            if (
+                request.learner_id != binding.learner_id
+                or request.capture_session_id != binding.capture_session_id
+                or request.capture_consent_id != binding.capture_consent_id
+                or request.consent_generation != binding.consent_generation
+                or request.route_lease_id != binding.route_lease_id
+                or request.route_epoch != binding.route_epoch
+                or request.capture_epoch != binding.capture_epoch
+            ):
+                raise ValueError("media_buffer_scope_mismatch")
+            receipt = media_buffer.resume(
+                learner_id=request.learner_id,
+                session_id=request.capture_session_id,
+                capture_consent_id=request.capture_consent_id,
+                consent_generation=request.consent_generation,
+                route_lease_id=request.route_lease_id,
+                route_epoch=request.route_epoch,
+                capture_epoch=request.capture_epoch,
+                owner_endpoint_id=request.owner_endpoint_id,
+                resume_attempt_id=request.resume_attempt_id,
+                media_security_session_id=media_security_session_id,
+                cursor=None if request.cursor is None else PcBufferResumeCursor(**request.cursor.model_dump()),
+            )
+        except ValueError as error:
+            code = str(error)
+            status = 404 if code == "media_security_session_not_available" else 409
+            raise HTTPException(status, detail={"code": code}) from error
+        return asdict(receipt)
+
+    @app.post("/api/v2/media-sessions/{media_security_session_id}/ack", status_code=204)
+    async def ack_v2_media_buffer(
+        media_security_session_id: str,
+        request: V2MediaAckIngress,
+        authenticated: tuple[str, int] = Depends(require_v2_device_credential),
+    ) -> Response:
+        try:
+            binding = media_security.require_session(
+                media_security_session_id, authenticated_device_id=authenticated[0]
+            )
+            if (
+                request.learner_id != binding.learner_id
+                or request.capture_session_id != binding.capture_session_id
+                or request.capture_consent_id != binding.capture_consent_id
+                or request.consent_generation != binding.consent_generation
+                or request.route_epoch != binding.route_epoch
+                or request.capture_epoch != binding.capture_epoch
+            ):
+                raise ValueError("media_buffer_scope_mismatch")
+            media_buffer.ack(
+                learner_id=request.learner_id,
+                session_id=request.capture_session_id,
+                capture_consent_id=request.capture_consent_id,
+                consent_generation=request.consent_generation,
+                route_epoch=request.route_epoch,
+                capture_epoch=request.capture_epoch,
+                sequence=request.sequence,
+                media_security_session_id=media_security_session_id,
+            )
+        except (KeyError, ValueError) as error:
+            code = str(error) if isinstance(error, ValueError) else "media_buffer_fragment_not_available"
+            status = 404 if code == "media_security_session_not_available" else 409
+            raise HTTPException(status, detail={"code": code}) from error
+        return Response(status_code=204)
+
+    @app.delete("/api/v2/device-credentials/me", status_code=204)
+    async def revoke_v2_device_credential(
+        authenticated: tuple[str, int] = Depends(require_v2_device_credential),
+    ) -> Response:
+        store.revoke_v2_device_credential(authenticated[0])
+        capture_supervisor.revoke_device(authenticated[0])
+        media_security.revoke_device(authenticated[0])
+        media_buffer.revoke_device(authenticated[0])
+        return Response(status_code=204)
 
     @app.post("/api/mobile-outbox/devices/pair")
     async def pair(request: PairRequest, http_request: Request) -> dict[str, object]:
@@ -891,6 +2212,9 @@ def build_app(settings: GatewaySettings) -> FastAPI:
     @app.delete("/api/mobile-outbox/devices/me", status_code=204)
     async def revoke_current_device(device_id: str = Depends(require_pairing)) -> Response:
         store.revoke(device_id)
+        capture_supervisor.revoke_device(device_id)
+        media_security.revoke_device(device_id)
+        media_buffer.revoke_device(device_id)
         return Response(status_code=204)
 
     @app.post("/api/capture-sessions", status_code=202)
@@ -913,11 +2237,81 @@ def build_app(settings: GatewaySettings) -> FastAPI:
             raise HTTPException(404, detail={"code": "capture_session_not_found"})
         return session.response()
 
+    @app.post("/api/capture-sessions/{session_id}/foreground-app")
+    async def observe_capture_foreground_app(
+        session_id: str,
+        request: ForegroundAppObservationRequest,
+        device_id: str = Depends(require_pairing),
+    ) -> dict[str, object]:
+        try:
+            decision = capture_supervisor.observe_foreground_app(
+                device_id,
+                session_id,
+                request.package_name,
+                request.observation_source,
+            )
+        except KeyError as error:
+            raise HTTPException(404, detail={"code": str(error)}) from error
+        except ValueError as error:
+            raise HTTPException(409, detail={"code": str(error)}) from error
+        session = capture_supervisor.get(device_id, session_id)
+        assert session is not None
+        return {**session.response(), "decision_reason": decision.reason}
+
+    @app.post("/api/capture-sessions/{session_id}/audio-capability", status_code=202)
+    async def record_capture_audio_capability(
+        session_id: str,
+        request: AudioCapabilitySnapshotRequest,
+        device_id: str = Depends(require_pairing),
+    ) -> dict[str, object]:
+        session = capture_supervisor.get(device_id, session_id)
+        if session is None:
+            raise HTTPException(404, detail={"code": "capture_session_not_found"})
+        if session.state not in {"STARTING", "RUNNING"}:
+            raise HTTPException(409, detail={"code": "capture_session_not_active"})
+        if request.capture_generation != session.capture_generation:
+            raise HTTPException(409, detail={"code": "capture_audio_generation_stale"})
+        try:
+            state = store.record_capture_audio_capability(device_id, session_id, request)
+        except ValueError as error:
+            raise HTTPException(409, detail={"code": str(error)}) from error
+        payload = request.model_dump(mode="json")
+        payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        try:
+            session.append_audio_telemetry(
+                {
+                    "event_type": "CaptureAudioCapabilityObservedL0",
+                    "capture_session_id": session_id,
+                    "device_id": device_id,
+                    "payload": payload,
+                    "payload_sha256": sha256(payload_json),
+                    "admission": "L0_ONLY_NO_V2_CONSENT",
+                    "received_at": iso(utc_now()),
+                }
+            )
+        except OSError as error:
+            # The database receipt alone is not enough for the concurrently
+            # running media pipeline to bind this L0 technical fact.  Return a
+            # retryable failure; a same-ID retry remains idempotent in SQLite.
+            raise HTTPException(503, detail={"code": "capture_audio_journal_unavailable"}) from error
+        return {
+            "snapshot_id": request.snapshot_id,
+            "state": state,
+            # This endpoint is deliberately unable to admit L1 or v2 media.
+            # The formal v2 consent/media-security ingress will replace it.
+            "admission": "L0_ONLY_NO_V2_CONSENT",
+        }
+
     @app.post("/api/capture-sessions/{session_id}/stop", status_code=202)
     async def stop_capture_session(session_id: str, device_id: str = Depends(require_pairing)) -> dict[str, object]:
         session = capture_supervisor.stop(device_id, session_id)
         if session is None:
             raise HTTPException(404, detail={"code": "capture_session_not_found"})
+        # Fence the encrypted data plane at the same user-stop boundary.  The
+        # private buffer is intentionally not revoked: fragments accepted
+        # before this boundary remain durable evidence for interruption
+        # settlement, while late queued uploads are rejected.
+        media_security.close_capture_session(session_id, device_id=device_id)
         return session.response()
 
     @app.get("/api/mobile-outbox/messages")
@@ -929,14 +2323,16 @@ def build_app(settings: GatewaySettings) -> FastAPI:
     @app.post("/api/mobile-outbox/messages", status_code=202)
     async def enqueue_message(request: OutboxIngressRequest, _: None = Depends(require_ingress_key)) -> dict[str, str]:
         payload = request.payload
-        if payload.get("schema_version") != "mobile_result_message.v1":
+        if payload.get("schema_version") == "mobile_result_message.v1":
+            raise HTTPException(410, detail={"code": "legacy_v1_ingress_disabled"})
+        if payload.get("schema_version") == "CONTENT_ANALYSIS_PACKAGE.v2.l1":
+            # The endpoint remains reserved so Android and PC can converge on
+            # one URL. It cannot enqueue until the typed v2 codec, local
+            # admission resolver and receipt transaction are connected.
+            raise HTTPException(503, detail={"code": "v2_delivery_ingress_unavailable"})
+        if not isinstance(payload.get("schema_version"), str):
             raise HTTPException(422, detail={"code": "mobile_message_schema_unsupported"})
-        if payload.get("message_type") not in {"ANALYSIS_RESULT", "CANDIDATE_CARD"}:
-            raise HTTPException(422, detail={"code": "mobile_message_type_unsupported"})
-        try:
-            return {"message_id": request.message_id, "state": store.enqueue(request)}
-        except ValueError as error:
-            raise HTTPException(422, detail={"code": str(error)}) from error
+        raise HTTPException(422, detail={"code": "mobile_message_schema_unsupported"})
 
     @app.post("/api/mobile-outbox/messages/ack", status_code=204)
     async def acknowledge_message(request: AckRequest, paired_device: str = Depends(require_pairing)) -> Response:

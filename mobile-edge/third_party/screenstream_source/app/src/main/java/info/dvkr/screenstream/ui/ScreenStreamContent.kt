@@ -25,12 +25,8 @@ import info.dvkr.screenstream.notification.NotificationPermission
 @Composable
 internal fun ScreenStreamContent(
     modifier: Modifier = Modifier,
-    initialCandidateCardId: String? = null,
-    initialOpenL1: Boolean = false,
 ) {
     V5NativeApp(
-        initialCandidateCardId = initialCandidateCardId,
-        initialOpenL1 = initialOpenL1,
         modifier = modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxSize(),
     )
 

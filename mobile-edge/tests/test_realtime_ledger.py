@@ -21,6 +21,7 @@ from realtime_runtime.contracts import (  # noqa: E402
     Visit,
 )
 from realtime_runtime.ledger import SealedWindowLedger  # noqa: E402
+from realtime_runtime.l0_audio_telemetry import L0AudioTelemetryReference  # noqa: E402
 from realtime_runtime.visit import VisitWindowPlanner  # noqa: E402
 
 
@@ -109,6 +110,55 @@ class SealedWindowLedgerTests(unittest.TestCase):
                 self.assertEqual(2, retried.attempt_id)
                 self.assertEqual("worker-b", retried.worker_id)
 
+    def test_fragment_persists_verified_audio_sync_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with SealedWindowLedger(Path(temp_dir) / "ledger.sqlite") as ledger:
+                sealed = SealedFragment(
+                    **{
+                        **fragment("f1", 0, 2, HASH_A).__dict__,
+                        "capture_generation": 8,
+                        "audio_status": AudioStatus.SAME_SOURCE_AUDIO_VERIFIED,
+                        "audio_sync_error_ns": 10,
+                        "audio_sync_sample_hash": HASH_C,
+                        "audio_max_allowed_sync_error_ns": 20,
+                    }
+                )
+                ledger.append_fragment(sealed)
+                ledger.append_l0_audio_telemetry_refs(
+                    sealed.fragment_id,
+                    (
+                        L0AudioTelemetryReference(
+                            snapshot_id="audio-l0-1",
+                            payload_sha256=HASH_B,
+                            session_epoch_id="rtsp-11",
+                            capture_path="PLAYBACK",
+                            status="CAPTURE_ACTIVE_UNVERIFIED",
+                            restriction="NONE",
+                            video_pts_start_ns=0,
+                            video_pts_end_ns=2,
+                        ),
+                    ),
+                )
+                row = ledger._connection.execute(
+                    """
+                    SELECT capture_generation, audio_sync_error_ns, audio_sync_sample_hash,
+                           audio_max_allowed_sync_error_ns
+                    FROM fragments WHERE fragment_id = ?
+                    """,
+                    (sealed.fragment_id,),
+                ).fetchone()
+                audio_reference = ledger._connection.execute(
+                    "SELECT snapshot_id, payload_sha256, session_epoch_id FROM fragment_l0_audio_telemetry_refs"
+                ).fetchone()
+
+        self.assertEqual(8, row["capture_generation"])
+        self.assertEqual(10, row["audio_sync_error_ns"])
+        self.assertEqual(HASH_C, row["audio_sync_sample_hash"])
+        self.assertEqual(20, row["audio_max_allowed_sync_error_ns"])
+        self.assertEqual("audio-l0-1", audio_reference["snapshot_id"])
+        self.assertEqual(HASH_B, audio_reference["payload_sha256"])
+        self.assertEqual("rtsp-11", audio_reference["session_epoch_id"])
+
     def test_evidence_with_wrong_media_coverage_is_rejected_and_job_stays_leased(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with SealedWindowLedger(Path(temp_dir) / "ledger.sqlite") as ledger:
@@ -156,6 +206,21 @@ class SealedWindowLedgerTests(unittest.TestCase):
                 self.assertEqual(["w1"], [item.window_id for item in restarted.fused_candidate_events()])
                 self.assertEqual([], restarted.fuse_ready(now_ns=101))
 
+    def test_fused_candidate_l0_inputs_expose_verified_hashes_without_promoting_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with SealedWindowLedger(Path(temp_dir) / "ledger.sqlite") as ledger:
+                self.open_visit(ledger)
+                ledger.append_fragment(fragment("f1", 0, 2, HASH_A))
+                ledger.create_window(window("w1", 0, 2, (HASH_A,)))
+                for index, lane in enumerate((Lane.ASR, Lane.OCR, Lane.VLM), 1):
+                    lease = ledger.claim(lane, f"worker-{lane}", now_ns=index, lease_ns=100)
+                    ledger.complete(lease, evidence("w1", lane, 0, 2, (HASH_A,), index + 10))
+                candidate = ledger.fuse_ready(now_ns=100)[0]
+                session_id, evidence_hashes = ledger.fused_candidate_l0_inputs(candidate)
+                self.assertEqual("session-1", session_id)
+                self.assertEqual(("a" * 64, "o" * 64, "v" * 64), evidence_hashes)
+                self.assertEqual("CANDIDATE_ONLY", candidate.classification)
+
     def test_opening_pre_event_ledger_backfills_only_verified_fused_windows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "ledger.sqlite"
@@ -187,6 +252,30 @@ class SealedWindowLedgerTests(unittest.TestCase):
                     self.assertEqual("w2", lease.window_id)
                     ledger.complete(lease, evidence("w2", lane, 2, 4, (HASH_B,), 20))
                 self.assertIsNone(ledger.contiguous_watermark("session-1:visit:0001", Lane.VLM))
+
+    def test_complete_window_after_incomplete_window_fuses_without_crossing_the_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with SealedWindowLedger(Path(temp_dir) / "ledger.sqlite") as ledger:
+                self.open_visit(ledger)
+                ledger.append_fragment(fragment("gap", 0, 2, HASH_A))
+                ledger.append_fragment(fragment("verified", 2, 4, HASH_B))
+                ledger.create_window(
+                    window("gap", 0, 2, (HASH_A,)),
+                    fusion_mode=FusionMode.EVIDENCE_INCOMPLETE,
+                )
+                ledger.create_window(window("verified", 2, 4, (HASH_B,)))
+                for index, lane in enumerate((Lane.ASR, Lane.OCR, Lane.VLM), 1):
+                    lease = ledger.claim(lane, f"verified-{lane}", now_ns=index, lease_ns=100)
+                    if lease.window_id == "gap":
+                        lease = ledger.claim(lane, f"verified-{lane}-next", now_ns=index + 10, lease_ns=100)
+                    self.assertEqual("verified", lease.window_id)
+                    ledger.complete(lease, evidence("verified", lane, 2, 4, (HASH_B,), index + 20))
+
+                candidates = ledger.fuse_ready(now_ns=100)
+
+                self.assertEqual(["verified"], [candidate.window_id for candidate in candidates])
+                self.assertEqual([], ledger.fused_candidate_events()[:-1])
+                self.assertEqual("verified", ledger.fused_candidate_events()[-1].window_id)
 
     def test_visual_text_window_has_no_asr_and_is_never_described_as_trimodal(self) -> None:
         planner = VisitWindowPlanner(session_id="session-1", source_context=SourceContext.PHONE_DAILY, fragments_per_window=2)

@@ -6,7 +6,7 @@ import cn.zhixingzhixue.learning.domain.StudentReceipt
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Append-only local receipt outbox; transmission is deliberately a later adapter. */
+/** Legacy candidate receipt shell. Existing data is read-only migration evidence. */
 public class AndroidReceiptStore(context: Context) : ReceiptPort {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
@@ -15,16 +15,8 @@ public class AndroidReceiptStore(context: Context) : ReceiptPort {
     }
 
     public fun append(receipt: StudentReceipt) {
-        val values = JSONArray(preferences.getString(RECEIPTS, "[]"))
-        values.put(
-            JSONObject()
-                .put("captureId", receipt.captureId?.value)
-                .put("evidenceCardId", receipt.evidenceCardId?.value)
-                .put("candidateCardId", receipt.candidateCardId?.value)
-                .put("action", receipt.action.name)
-                .put("recordedAt", receipt.recordedAt.toString())
-        )
-        preferences.edit().putString(RECEIPTS, values.toString()).apply()
+        @Suppress("UNUSED_VARIABLE")
+        val rejected = receipt
     }
 
     private companion object {

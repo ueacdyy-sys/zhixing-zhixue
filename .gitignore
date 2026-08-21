@@ -11,6 +11,7 @@ __pycache__/
 data/
 evidence/
 !evidence/.gitkeep
+outputs/
 dist/
 build/
 .idea/
@@ -51,3 +52,8 @@ mobile-edge/docs/zhixing-*.xml
 
 # 本机标注工具、模型标注数据与第三方下载包，不进入产品源码仓库。
 tools/annotation/
+
+# 构建/运行时二进制产物与本地环境，体积大且可再生，不进入版本库。
+artifacts/
+ZhixingZhixuemobile-edge.gateway-runtime/
+mobile-edge/.gateway-runtime/

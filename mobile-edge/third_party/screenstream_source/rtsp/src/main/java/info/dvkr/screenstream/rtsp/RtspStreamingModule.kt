@@ -27,8 +27,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import org.koin.core.parameter.parametersOf
+import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
+@OptIn(ExperimentalUuidApi::class)
 public class RtspStreamingModule : StreamingModule {
 
     public companion object {
@@ -40,6 +42,7 @@ public class RtspStreamingModule : StreamingModule {
     internal val rtspStateFlow: StateFlow<RtspState> = _rtspStateFlow.asStateFlow()
     private var startToken: String? = null
     private var streamingService: RtspStreamingService? = null
+    @Volatile private var encodedFrameSink: RtspEncodedFrameSink? = null
     /** A V5 start tap may arrive while the module service is still starting.
      * Keep exactly one user request and deliver it after the service is ready;
      * previously this was discarded as a stale event. */
@@ -130,7 +133,7 @@ public class RtspStreamingModule : StreamingModule {
                 startToken = null
                 val scope = RtspKoinScope().scope
                 try {
-                    val createdStreamingService = scope.get<RtspStreamingService> { parametersOf(service, _rtspStateFlow) }
+                    val createdStreamingService = scope.get<RtspStreamingService> { parametersOf(service, _rtspStateFlow, { encodedFrameSink }) }
                     streamingService = createdStreamingService
                     _streamingServiceState.value = StreamingModule.State.Running(scope)
                     createdStreamingService.start()
@@ -214,6 +217,22 @@ public class RtspStreamingModule : StreamingModule {
     override fun recoverError() {
         XLog.d(getLog("recoverError"))
         sendEvent(RtspEvent.Intentable.RecoverError)
+    }
+
+    internal fun setEncodedFrameSink(sink: RtspEncodedFrameSink?) {
+        encodedFrameSink = sink
+    }
+
+    /** Applies a privacy egress gate without changing MediaProjection ownership. */
+    @MainThread
+    public fun setPairedPcOutputAllowed(allowed: Boolean) {
+        check(Looper.getMainLooper().isCurrentThread) { "Only main thread allowed" }
+        val activeStreamingService = streamingService
+        if (activeStreamingService != null) {
+            activeStreamingService.sendEvent(RtspStreamingService.InternalEvent.SetPairedPcOutputAllowed(allowed))
+        } else {
+            XLog.i(getLog("setPairedPcOutputAllowed", "RTSP service not running; gate will remain closed until capture starts"))
+        }
     }
 
     @MainThread

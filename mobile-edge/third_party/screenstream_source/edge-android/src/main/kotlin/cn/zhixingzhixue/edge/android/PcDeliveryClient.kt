@@ -3,6 +3,7 @@ package cn.zhixingzhixue.edge.android
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.UUID
@@ -28,6 +29,23 @@ public data class PcCaptureSession(
     val sessionId: String,
     val state: String,
     val error: String?,
+    /** PC-issued lease for v2 media; absence means the legacy capture session cannot open v2 media. */
+    val mediaRouteLeaseId: String? = null,
+    val mediaRouteEpoch: Long? = null,
+    val captureEpoch: Long? = null,
+)
+
+/** PC-audited decision for one device-observed foreground application. */
+public data class PcCaptureOutputDecision(
+    val outputState: String,
+    val decisionReason: String,
+)
+
+/** PC receipt for immutable L0-only capture audio telemetry. */
+public data class PcCaptureAudioTelemetryReceipt(
+    val snapshotId: String,
+    val state: String,
+    val admission: String,
 )
 
 public class AndroidPcDeliveryLinkStore(context: Context) {
@@ -82,8 +100,6 @@ public class AndroidPcDeliveryLinkStore(context: Context) {
  */
 public class PcDeliveryClient(
     private val linkStore: AndroidPcDeliveryLinkStore,
-    private val inbox: AndroidPcResultInbox,
-    private val candidateInbox: PcCandidateCardInbox,
     private val knowledgeGraphSync: PcKnowledgeGraphSyncClient,
 ) {
     public suspend fun pair(baseUrl: String, pairingToken: String): PcDeliveryLink = withContext(Dispatchers.IO) {
@@ -135,8 +151,16 @@ public class PcDeliveryClient(
      * The PC derives the RTSP host from this authenticated TLS connection; the
      * phone therefore never submits an arbitrary network URL.
      */
-    public suspend fun startCaptureSession(sessionId: String, rtspPort: Int, rtspPath: String): PcCaptureSession = withContext(Dispatchers.IO) {
+    public suspend fun startCaptureSession(
+        sessionId: String,
+        captureGeneration: Long,
+        rtspPort: Int,
+        rtspPath: String,
+        capturePolicy: PcCaptureModePolicy = PcCaptureModePolicy.fullContinuous(),
+        consent: PcCaptureConsentSnapshot? = null,
+    ): PcCaptureSession = withContext(Dispatchers.IO) {
         require(sessionId.isNotBlank()) { "capture_session_id_required" }
+        require(captureGeneration > 0L) { "capture_generation_invalid" }
         require(rtspPort in 1..65535) { "capture_rtsp_port_invalid" }
         require(rtspPath.matches(Regex("[A-Za-z0-9._~-]+"))) { "capture_rtsp_path_invalid" }
         val link = linkStore.read() ?: throw IllegalStateException("pc_delivery_not_paired")
@@ -146,9 +170,20 @@ public class PcDeliveryClient(
             link,
             JSONObject()
                 .put("session_id", sessionId)
+                .put("capture_generation", captureGeneration)
                 .put("rtsp_port", rtspPort)
                 .put("rtsp_path", rtspPath)
                 .put("source", "PHONE_SCREEN")
+                .put("capture_mode", capturePolicy.mode.name)
+                .put("selected_packages", JSONArray(capturePolicy.selectedPackages.sorted()))
+                .apply {
+                    consent?.let {
+                        put("learner_id", it.learnerId)
+                        put("capture_consent_id", it.captureConsentId)
+                        put("consent_generation", it.consentGeneration)
+                        put("capture_epoch", it.captureEpoch)
+                    }
+                }
                 .toString(),
         ))
     }
@@ -172,6 +207,78 @@ public class PcDeliveryClient(
         parseCaptureSession(request(link.baseUrl + "/api/capture-sessions/" + encodedSessionId, "GET", link, null))
     }
 
+    /**
+     * Sends no screen content. It records only a locally observed package name
+     * and receives the PC policy decision that Android must mirror at its
+     * encoder egress gate.
+     */
+    public suspend fun reportForegroundApp(
+        sessionId: String,
+        packageName: String?,
+        source: ForegroundAppObservationSource,
+    ): PcCaptureOutputDecision = withContext(Dispatchers.IO) {
+        require(sessionId.isNotBlank()) { "capture_session_id_required" }
+        val link = linkStore.read() ?: throw IllegalStateException("pc_delivery_not_paired")
+        val encodedSessionId = java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name())
+        val response = request(
+            link.baseUrl + "/api/capture-sessions/" + encodedSessionId + "/foreground-app",
+            "POST",
+            link,
+            JSONObject()
+                .put("package_name", packageName ?: JSONObject.NULL)
+                .put("observation_source", source.name)
+                .toString(),
+        )
+        val document = JSONObject(response)
+        PcCaptureOutputDecision(
+            outputState = document.getString("capture_output_state"),
+            decisionReason = document.optString("decision_reason", "pc_policy_no_reason"),
+        )
+    }
+
+    /**
+     * Persists a retry-safe audio transport observation for the current paired
+     * PC capture. The receipt remains L0-only until the future v2 media
+     * ingress verifies consent, authentication, ranges and clock samples.
+     */
+    public suspend fun reportAudioCapability(
+        sessionId: String,
+        report: PcAudioCapabilityReport,
+    ): PcCaptureAudioTelemetryReceipt = withContext(Dispatchers.IO) {
+        require(sessionId.isNotBlank()) { "capture_session_id_required" }
+        val link = linkStore.read() ?: throw IllegalStateException("pc_delivery_not_paired")
+        val encodedSessionId = java.net.URLEncoder.encode(sessionId, Charsets.UTF_8.name())
+        val response = request(
+            link.baseUrl + "/api/capture-sessions/" + encodedSessionId + "/audio-capability",
+            "POST",
+            link,
+            JSONObject()
+                .put("snapshot_id", report.snapshotId)
+                .put("capture_generation", report.captureGeneration)
+                .put("capture_path", report.capturePath)
+                .put("status", report.status)
+                .put("application_package_id", report.applicationPackageId ?: JSONObject.NULL)
+                .put("restriction", report.restriction)
+                .put("failure_code", report.failureCode ?: JSONObject.NULL)
+                .put("video_pts_start_us", report.videoPtsStartUs)
+                .put("video_pts_end_us", report.videoPtsEndUs)
+                .put("audio_pts_start_us", report.audioPtsStartUs ?: JSONObject.NULL)
+                .put("audio_pts_end_us", report.audioPtsEndUs ?: JSONObject.NULL)
+                .put("session_epoch_id", report.sessionEpochId)
+                .put("clock_domain", "ANDROID_ELAPSED_REALTIME_MONOTONIC")
+                .put("anchor_elapsed_realtime_ns", report.anchorElapsedRealtimeNs)
+                .put("sync_error_us", report.syncErrorUs ?: JSONObject.NULL)
+                .put("recovery_attempt", report.recoveryAttempt)
+                .toString(),
+        )
+        val receipt = JSONObject(response)
+        val state = receipt.getString("state")
+        val admission = receipt.getString("admission")
+        require(state in setOf("CAPTURE_AUDIO_TELEMETRY_ACCEPTED", "DUPLICATE")) { "pc_capture_audio_receipt_invalid" }
+        require(admission == report.admission) { "pc_capture_audio_admission_invalid" }
+        PcCaptureAudioTelemetryReceipt(receipt.getString("snapshot_id"), state, admission)
+    }
+
     public suspend fun synchronizeOnce(): Int = withContext(Dispatchers.IO) {
         val link = linkStore.read() ?: return@withContext 0
         val endpoint = link.baseUrl + "/api/mobile-outbox/messages?device_id=" +
@@ -184,18 +291,18 @@ public class PcDeliveryClient(
             val deliveryId = delivery.getString("message_id")
             val deliveryToken = delivery.getString("delivery_token")
             val payload = delivery.getJSONObject("payload")
-            val acceptedByLocalStore = try {
-                require(payload.getString("schema_version") == "mobile_result_message.v1") {
-                    "mobile_result_message_schema_unsupported"
+            try {
+                val rejectionReason = when (payload.getString("schema_version")) {
+                    // v1 could write the old graph/content stores without the
+                    // v2 consent, route, audio and revision checks. It is
+                    // permanently transport-dead, not a fallback.
+                    "mobile_result_message.v1" -> "legacy_v1_delivery_disabled"
+                    // The v2 ingress is deliberately not enabled until its
+                    // Room transaction and receipt implementation lands.
+                    "CONTENT_ANALYSIS_PACKAGE.v2.l1" -> "v2_delivery_ingress_unavailable"
+                    else -> "mobile_delivery_schema_unsupported"
                 }
-                when (payload.getString("message_type")) {
-                    "ANALYSIS_RESULT" -> {
-                        inbox.accept(payload.getJSONObject("analysis_result").toString())
-                        true
-                    }
-                    "CANDIDATE_CARD" -> candidateInbox.accept(payload)
-                    else -> throw IllegalArgumentException("mobile_result_message_type_unsupported")
-                }
+                nack(link, deliveryId, deliveryToken, rejectionReason, retryable = false)
             } catch (error: IllegalArgumentException) {
                 nack(link, deliveryId, deliveryToken, error.message ?: "rejected_schema_or_gate", retryable = false)
                 continue
@@ -206,23 +313,6 @@ public class PcDeliveryClient(
                 nack(link, deliveryId, deliveryToken, "local_persist_retryable", retryable = true)
                 continue
             }
-            if (!acceptedByLocalStore) {
-                nack(link, deliveryId, deliveryToken, "rejected_schema_or_gate", retryable = false)
-                continue
-            }
-            // The local repository transaction has completed. ACK is deliberately last.
-            request(
-                link.baseUrl + "/api/mobile-outbox/messages/ack",
-                "POST",
-                link,
-                JSONObject()
-                    .put("device_id", link.deviceId)
-                    .put("message_id", deliveryId)
-                    .put("delivery_token", deliveryToken)
-                    .toString(),
-            )
-            linkStore.updateCursor(deliveryId)
-            accepted += 1
         }
         // A graph event is long-lived knowledge state, not a time-limited
         // notification.  Synchronize it after durable PC-result delivery.
@@ -256,6 +346,9 @@ public class PcDeliveryClient(
             sessionId = document.getString("session_id"),
             state = document.getString("state"),
             error = document.optString("error").takeIf { it.isNotBlank() },
+            mediaRouteLeaseId = document.optString("media_route_lease_id").takeIf { it.isNotBlank() },
+            mediaRouteEpoch = document.optLong("media_route_epoch", 0L).takeIf { it > 0L },
+            captureEpoch = document.optLong("capture_epoch", 0L).takeIf { it > 0L },
         )
     }
 

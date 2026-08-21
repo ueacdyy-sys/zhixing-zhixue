@@ -21,7 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import JobLease, Lane, LaneEvidence, QualityStatus, WindowDescriptor
+from .analysis_route import AnalysisRouteLedger
+from .legacy_l0_adapter import fused_candidate_to_l0_fact
 from .ledger import SealedWindowLedger
+from .semantic_ledger import RealtimeSemanticLedger
 from .window_media import build_window_media
 
 
@@ -265,16 +268,16 @@ def _evidence_from_artifact(lease: JobLease, descriptor: WindowDescriptor, artif
     )
 
 
-def _record_candidate_projection_error(artifact_root: Path, error: Exception) -> None:
-    """Keep a visible projection failure without rewriting completed media evidence."""
+def _record_v2_l0_projection_error(artifact_root: Path, error: Exception) -> None:
+    """A v2 migration failure is visible and never falls back to candidate L1."""
 
-    output = artifact_root / "candidate_card_projection_errors.jsonl"
+    output = artifact_root / "v2_l0_projection_errors.jsonl"
     with exclusive_slot(output.with_suffix(output.suffix + ".lock")):
         with output.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(
                 json.dumps(
                     {
-                        "event_type": "CandidateCardProjectionFailed",
+                        "event_type": "V2L0ProjectionFailed",
                         "pc_monotonic_ns": time.monotonic_ns(),
                         "error_type": type(error).__name__,
                     },
@@ -285,9 +288,86 @@ def _record_candidate_projection_error(artifact_root: Path, error: Exception) ->
             )
 
 
+def _project_fused_candidates_to_v2_l0(
+    *,
+    legacy_ledger: SealedWindowLedger,
+    fused: tuple[object, ...],
+    semantic_ledger_path: Path | None,
+    learner_id: str | None,
+    capture_consent_id: str | None,
+    consent_generation: int | None,
+    route_ledger_path: Path | None,
+    route_lease_id: str | None,
+    route_epoch: int | None,
+    owner_endpoint_id: str | None,
+    artifact_root: Path,
+    now_elapsed_ns: int,
+) -> None:
+    if semantic_ledger_path is None or not fused:
+        return
+    assert learner_id is not None and capture_consent_id is not None and consent_generation is not None
+    assert route_ledger_path is not None and route_lease_id is not None and route_epoch is not None and owner_endpoint_id is not None
+    try:
+        with AnalysisRouteLedger(route_ledger_path) as route_ledger, RealtimeSemanticLedger(semantic_ledger_path) as semantic_ledger:
+            for candidate in fused:
+                session_id, evidence_hashes = legacy_ledger.fused_candidate_l0_inputs(candidate)  # type: ignore[arg-type]
+                route_ledger.assert_pc_ingress_authorized(
+                    lease_id=route_lease_id,
+                    learner_id=learner_id,
+                    session_id=session_id,
+                    capture_consent_id=capture_consent_id,
+                    consent_generation=consent_generation,
+                    route_epoch=route_epoch,
+                    endpoint_id=owner_endpoint_id,
+                    now_elapsed_ns=now_elapsed_ns,
+                )
+                fact = fused_candidate_to_l0_fact(
+                    candidate,  # type: ignore[arg-type]
+                    session_id=session_id,
+                    learner_id=learner_id,
+                    capture_consent_id=capture_consent_id,
+                    consent_generation=consent_generation,
+                    evidence_hashes=evidence_hashes,
+                )
+                semantic_ledger.append_fact(fact)
+    except Exception as error:
+        _record_v2_l0_projection_error(artifact_root, error)
+
+
+def _validate_v2_projection_config(
+    semantic_ledger_path: Path | None,
+    learner_id: str | None,
+    capture_consent_id: str | None,
+    consent_generation: int | None,
+    route_ledger_path: Path | None,
+    route_lease_id: str | None,
+    route_epoch: int | None,
+    owner_endpoint_id: str | None,
+) -> None:
+    semantic_values = (semantic_ledger_path, learner_id, capture_consent_id, consent_generation)
+    route_values = (route_ledger_path, route_lease_id, route_epoch, owner_endpoint_id)
+    if any(item is not None for item in semantic_values) and not all(item is not None for item in semantic_values):
+        raise ValueError("v2_l0_projection_config_incomplete")
+    if any(item is not None for item in route_values) and not all(item is not None for item in route_values):
+        raise ValueError("v2_l0_route_config_incomplete")
+    if any(item is not None for item in semantic_values) != any(item is not None for item in route_values):
+        raise ValueError("v2_l0_projection_requires_route_authority")
+    if consent_generation is not None and consent_generation < 1:
+        raise ValueError("v2_l0_projection_consent_generation_invalid")
+    if route_epoch is not None and route_epoch < 1:
+        raise ValueError("v2_l0_route_epoch_invalid")
+
+
 def run_worker(
-    *, lane: Lane, ledger_path: Path, capture_root: Path, artifact_root: Path, model_dir: Path, worker_id: str, max_idle_seconds: float = 0.0
+    *, lane: Lane, ledger_path: Path, capture_root: Path, artifact_root: Path, model_dir: Path, worker_id: str, max_idle_seconds: float = 0.0,
+    semantic_ledger_path: Path | None = None, learner_id: str | None = None, capture_consent_id: str | None = None,
+    consent_generation: int | None = None, route_ledger_path: Path | None = None, route_lease_id: str | None = None,
+    route_epoch: int | None = None, owner_endpoint_id: str | None = None,
 ) -> int:
+    _validate_v2_projection_config(
+        semantic_ledger_path, learner_id, capture_consent_id, consent_generation,
+        route_ledger_path, route_lease_id, route_epoch, owner_endpoint_id,
+    )
     executor = LaneExecutor(lane, model_dir=model_dir)
     executor.warm(artifact_root)
     ready = artifact_root / f"{worker_id}.ready.json"
@@ -306,16 +386,20 @@ def run_worker(
                 # later fragment arrives.
                 fused = ledger.fuse_ready(now_ns=now_ns)
                 if fused:
-                    try:
-                        from .candidate_card_projection import project_candidate_cards
-
-                        project_candidate_cards(
-                            ledger_path=ledger_path,
-                            artifact_root=artifact_root,
-                            output_path=artifact_root / "candidate_cards.v1.json",
-                        )
-                    except Exception as projection_error:
-                        _record_candidate_projection_error(artifact_root, projection_error)
+                    _project_fused_candidates_to_v2_l0(
+                        legacy_ledger=ledger,
+                        fused=tuple(fused),
+                        semantic_ledger_path=semantic_ledger_path,
+                        learner_id=learner_id,
+                        capture_consent_id=capture_consent_id,
+                        consent_generation=consent_generation,
+                        route_ledger_path=route_ledger_path,
+                        route_lease_id=route_lease_id,
+                        route_epoch=route_epoch,
+                        owner_endpoint_id=owner_endpoint_id,
+                        artifact_root=artifact_root,
+                        now_elapsed_ns=now_ns,
+                    )
                 if max_idle_seconds and time.monotonic() - idle_started >= max_idle_seconds:
                     return 0
                 time.sleep(0.05)
@@ -328,16 +412,20 @@ def run_worker(
                 ledger.complete(lease, _evidence_from_artifact(lease, descriptor, artifact))
                 fused = ledger.fuse_ready(now_ns=time.monotonic_ns())
                 if fused:
-                    try:
-                        from .candidate_card_projection import project_candidate_cards
-
-                        project_candidate_cards(
-                            ledger_path=ledger_path,
-                            artifact_root=artifact_root,
-                            output_path=artifact_root / "candidate_cards.v1.json",
-                        )
-                    except Exception as projection_error:
-                        _record_candidate_projection_error(artifact_root, projection_error)
+                    _project_fused_candidates_to_v2_l0(
+                        legacy_ledger=ledger,
+                        fused=tuple(fused),
+                        semantic_ledger_path=semantic_ledger_path,
+                        learner_id=learner_id,
+                        capture_consent_id=capture_consent_id,
+                        consent_generation=consent_generation,
+                        route_ledger_path=route_ledger_path,
+                        route_lease_id=route_lease_id,
+                        route_epoch=route_epoch,
+                        owner_endpoint_id=owner_endpoint_id,
+                        artifact_root=artifact_root,
+                        now_elapsed_ns=now_ns,
+                    )
             except Exception as error:  # A lane failure must remain a visible terminal/retry state.
                 ledger.fail(lease, error_code=type(error).__name__[:80], now_ns=time.monotonic_ns(), retry_delay_ns=1_000_000_000, max_attempts=2)
 
@@ -351,10 +439,22 @@ def main() -> int:
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--worker-id", required=True)
     parser.add_argument("--max-idle-seconds", type=float, default=0.0)
+    parser.add_argument("--v2-semantic-ledger", type=Path, default=None)
+    parser.add_argument("--v2-learner-id", default=None)
+    parser.add_argument("--v2-capture-consent-id", default=None)
+    parser.add_argument("--v2-consent-generation", type=int, default=None)
+    parser.add_argument("--v2-route-ledger", type=Path, default=None)
+    parser.add_argument("--v2-route-lease-id", default=None)
+    parser.add_argument("--v2-route-epoch", type=int, default=None)
+    parser.add_argument("--v2-owner-endpoint-id", default=None)
     args = parser.parse_args()
     return run_worker(
         lane=Lane(args.lane), ledger_path=Path(args.ledger), capture_root=Path(args.capture_root), artifact_root=Path(args.artifact_root),
         model_dir=Path(args.model_dir), worker_id=args.worker_id, max_idle_seconds=args.max_idle_seconds,
+        semantic_ledger_path=args.v2_semantic_ledger, learner_id=args.v2_learner_id,
+        capture_consent_id=args.v2_capture_consent_id, consent_generation=args.v2_consent_generation,
+        route_ledger_path=args.v2_route_ledger, route_lease_id=args.v2_route_lease_id,
+        route_epoch=args.v2_route_epoch, owner_endpoint_id=args.v2_owner_endpoint_id,
     )
 
 
