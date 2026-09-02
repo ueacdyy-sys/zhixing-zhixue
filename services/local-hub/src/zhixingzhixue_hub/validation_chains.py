@@ -135,10 +135,10 @@ def run_pc_validation_chain() -> dict[str, Any]:
             ],
             "quality_flags": quality_gate["canonical_flags"],
         },
-        interpretation="该事实事件归属于当前 PC 学习阶段。",
+        interpretation=None,
         counterevidence=["当前仅有一条事件证据。"],
         uncertainty=["可穿戴辅助信号质量不足。"],
-        confidence="medium",
+        confidence="low",
         action="由学生查看证据边界后自行决定。",
     )
     card_envelope = {
