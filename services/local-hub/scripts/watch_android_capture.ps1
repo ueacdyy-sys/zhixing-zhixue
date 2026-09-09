@@ -3,7 +3,10 @@ param(
     [int]$TimeoutSeconds = 180
 )
 
-$adb = 'C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe'
+$sdkRoot = [Environment]::GetEnvironmentVariable('ANDROID_SDK_ROOT', 'User')
+if (!$sdkRoot) { $sdkRoot = "$env:LOCALAPPDATA\Android\Sdk" }
+$adb = Join-Path $sdkRoot 'platform-tools\adb.exe'
+if (!(Test-Path $adb)) { $adb = (Get-Command adb -ErrorAction Stop).Source }
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $samples = @()
 while ((Get-Date) -lt $deadline) {

@@ -13,7 +13,7 @@
 
 ## 构建
 
-真实目录为 `C:\Users\Administrator\Desktop\知行智学`。Windows 构建必须从 ASCII Junction 启动：
+真实目录为 `C:\Users\86152\Desktop\zhixing-zhixue`。Windows 构建必须从 ASCII Junction 启动：
 
 ```powershell
 cd C:\ZhixingZhixue\mobile-edge\third_party\screenstream_source

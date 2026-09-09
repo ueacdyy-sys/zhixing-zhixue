@@ -1,5 +1,9 @@
 pluginManagement {
     repositories {
+        // 国内镜像优先（阿里云），官方库兜底
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/central") }
         google {
             content {
                 includeGroupByRegex("com\\.android.*")
@@ -21,6 +25,9 @@ dependencyResolutionManagement {
         // Verified artifacts downloaded through IDM are staged here first, so
         // offline builds never fall back to an uncontrolled network fetch.
         maven { url = uri("$rootDir/vendor-maven") }
+        // 国内镜像优先（阿里云），官方库兜底
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/central") }
         google()
         mavenCentral()
     }

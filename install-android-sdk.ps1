@@ -1,72 +1,73 @@
-# 检查代理是否可用，不可用则等待
-$proxy = "http://127.0.0.1:7897"
-$maxWait = 60
-$waited = 0
-while ($waited -lt $maxWait) {
-    try {
-        $null = Invoke-WebRequest -Uri "https://www.baidu.com" -Proxy $proxy -TimeoutSec 5 -UseBasicParsing
-        Write-Host "Proxy is available, starting download..."
-        break
-    } catch {
-        Write-Host "Waiting for proxy ($($maxWait - $waited)s remaining)..."
-        Start-Sleep 5
-        $waited += 5
+# install-android-sdk.ps1
+# 知行智学 Android SDK 安装脚本（国内镜像版）
+# 镜像源：腾讯云 mirrors.cloud.tencent.com/AndroidSDK（无需代理，国内直连）
+# 安装内容：cmdline-tools + platform-tools + build-tools 37.0.0 + platforms android-37.0
+# 说明：项目 mobile-edge/third_party/screenstream_source 要求 compileSdk 37 / buildToolsVersion 37.0.0
+$ErrorActionPreference = 'Stop'
+
+$Mirror = 'https://mirrors.cloud.tencent.com/AndroidSDK'
+$SdkRoot = "$env:LOCALAPPDATA\Android\Sdk"
+$TempDir = Join-Path $env:TEMP 'zhixing-android-sdk'
+New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+
+function Fetch-And-Unzip([string]$File, [string]$DestDir, [string]$RenameTo = '') {
+    $zip = Join-Path $TempDir $File
+    if (!(Test-Path $zip)) {
+        Write-Host "下载 $File ..."
+        curl.exe -L -sS -o $zip "$Mirror/$File" --connect-timeout 15 --max-time 900 --retry 3
+        if ($LASTEXITCODE -ne 0) { throw "下载失败: $File" }
+    } else {
+        Write-Host "复用缓存 $File"
+    }
+    Write-Host "解压 $File -> $DestDir"
+    Expand-Archive -Path $zip -DestinationPath $DestDir -Force
+    if ($RenameTo) {
+        $sub = Get-ChildItem -LiteralPath $DestDir -Directory | Select-Object -First 1
+        $target = Join-Path (Split-Path -Parent $DestDir) $RenameTo
+        if ((Test-Path $target) -and ($sub.FullName -ne $target)) { Remove-Item $target -Recurse -Force }
+        if ($sub.FullName -ne $target) { Move-Item $sub.FullName $target }
     }
 }
-if ($waited -ge $maxWait) {
-    Write-Host "ERROR: Proxy not available after ${maxWait}s. Please start your proxy (Clash/V2Ray) and re-run."
-    exit 1
+
+# 1) cmdline-tools（latest）
+$cmdlineLatest = "$SdkRoot\cmdline-tools\latest"
+if (!(Test-Path "$cmdlineLatest\bin\sdkmanager.bat")) {
+    $zip = Join-Path $TempDir 'commandlinetools-win-latest.zip'
+    Write-Host '下载 cmdline-tools ...'
+    curl.exe -L -sS -o $zip "$Mirror/commandlinetools-win-11076708_latest.zip" --connect-timeout 15 --max-time 900 --retry 3
+    if ($LASTEXITCODE -ne 0) { throw '下载失败: cmdline-tools' }
+    $stage = Join-Path $TempDir 'cmdline-extract'
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $zip -DestinationPath $stage -Force
+    Remove-Item "$SdkRoot\cmdline-tools" -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $cmdlineLatest | Out-Null
+    Copy-Item "$stage\cmdline-tools\*" $cmdlineLatest -Recurse -Force
+}
+Write-Host "cmdline-tools OK: $cmdlineLatest"
+
+# 2) platform-tools
+Fetch-And-Unzip 'platform-tools-latest-windows.zip' $SdkRoot
+# 3) build-tools 37.0.0（zip 内目录名为 android-37.0，需改名为 37.0.0）
+Fetch-And-Unzip 'build-tools_r37_windows.zip' "$SdkRoot\build-tools" '37.0.0'
+# 4) platforms android-37.0
+Fetch-And-Unzip 'platform-37.0_r02.zip' "$SdkRoot\platforms"
+
+# 5) 写入用户级环境变量
+[Environment]::SetEnvironmentVariable('ANDROID_HOME', $SdkRoot, 'User')
+[Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $SdkRoot, 'User')
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$adds = @("$SdkRoot\platform-tools", "$SdkRoot\cmdline-tools\latest\bin") | Where-Object { $userPath -notlike "*$_*" }
+if ($adds) { [Environment]::SetEnvironmentVariable('Path', ($adds -join ';') + ';' + $userPath, 'User') }
+# JAVA_HOME（若缺失则写入本机 JDK 21）
+if (![Environment]::GetEnvironmentVariable('JAVA_HOME', 'User')) {
+    $jdk = Get-ChildItem 'C:\Program Files\Java' -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like 'jdk-*' } | Sort-Object Name -Descending | Select-Object -First 1
+    if ($jdk) { [Environment]::SetEnvironmentVariable('JAVA_HOME', $jdk.FullName, 'User') }
 }
 
-# Download
-$ProgressPreference = 'SilentlyContinue'
-$zipUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
-$zipPath = "$env:TEMP\cmdline-tools-final.zip"
-$proxy = "http://127.0.0.1:7897"
-Write-Host "Downloading Android SDK Command-line Tools..."
-curl.exe -L -k -x $proxy -o $zipPath $zipUrl --connect-timeout 15 --max-time 600 --retry 3 -#
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Download failed"
-    exit 1
-}
-$size = (Get-Item $zipPath).Length
-Write-Host "Downloaded $size bytes"
-
-# Extract
-Write-Host "Extracting..."
-$extractDir = "$env:TEMP\cmdline-tools-final-extract"
-Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractDir)
-
-# Move to Android SDK dir
-$cmdlineDir = "$env:LOCALAPPDATA\Android\Sdk\cmdline-tools\latest"
-Remove-Item "$env:LOCALAPPDATA\Android\Sdk\cmdline-tools" -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $cmdlineDir | Out-Null
-Copy-Item "$extractDir\cmdline-tools\*" $cmdlineDir -Recurse -Force
-Write-Host "Command-line tools installed to: $cmdlineDir"
-
-# Set environment variables for current session
-$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
-$env:PATH = "$cmdlineDir\bin;$env:LOCALAPPDATA\Android\Sdk\platform-tools;$env:PATH"
-
-Write-Host ""
-Write-Host "Installing SDK packages (platform-tools, build-tools, platform 34)..."
-
-# Accept licenses
-Write-Host "y" | & "$cmdlineDir\bin\sdkmanager.bat" --proxy=http --proxy_host=127.0.0.1 --proxy_port=7897 "platform-tools" "build-tools;34.0.0" "platforms;android-34"
-
-Write-Host ""
-Write-Host "Setting permanent ANDROID_HOME..."
-[System.Environment]::SetEnvironmentVariable("ANDROID_HOME", $env:ANDROID_HOME, "User")
-[System.Environment]::SetEnvironmentVariable("ANDROID_SDK_ROOT", $env:ANDROID_HOME, "User")
-$currentPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
-if (-not $currentPath.Contains("Android\Sdk")) {
-    [System.Environment]::SetEnvironmentVariable("PATH", "$cmdlineDir\bin;$env:LOCALAPPDATA\Android\Sdk\platform-tools;$currentPath", "User")
-}
-Write-Host ""
-Write-Host "===== ALL DONE ====="
-Write-Host "ANDROID_HOME = $env:ANDROID_HOME"
-sdkmanager --version
+# 6) 验证
+& "$SdkRoot\platform-tools\adb.exe" version
+Write-Host ''
+Write-Host '===== ALL DONE ====='
+Write-Host "ANDROID_HOME = $SdkRoot"
+Write-Host '组件: cmdline-tools / platform-tools / build-tools 37.0.0 / platforms android-37.0'
