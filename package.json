@@ -1,7 +1,7 @@
 {
   "name": "zhixingzhixue",
   "private": true,
-  "packageManager": "pnpm@11.4.0",
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
     "pc:dev": "pnpm --filter @zhixingzhixue/pc-workbench dev",
     "pc:test": "pnpm --filter @zhixingzhixue/pc-workbench test",

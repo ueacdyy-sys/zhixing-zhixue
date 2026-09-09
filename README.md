@@ -1,17 +1,234 @@
 # 知行智学
 
-面向学习机会窗识别的多端智能学习助手与过程证据复盘系统。
+> 面向学习机会窗识别的多端智能学习助手与过程证据复盘系统
 
-## 应用边界
+## 📖 项目简介
 
-- `mobile-edge/third_party/screenstream_source/`：当前唯一 Android 学生端与 RTSP 媒体运输内核；包含 `learning-domain`、`learning-application`、`edge-android` 与 Compose 学生端。手机仅在用户主动授权后传输媒体，PC 端再进行受控分析。
-- `apps/pc-workbench/`：PC 学习实践、证据工作台、教师复核界面。
-- `services/local-hub/`：本地可信中枢；负责会话、授权、同步、证据、分析调度与审计。
-- `specs/004-realtime-learning-core/`：唯一冻结的实时学习理解、分级承接与迁移规格；其余历史规格不再作为实现或验收依据。
+### 从用户视角
 
-## 当前构建事实
+知行智学要解决的核心问题是:**学习过程证据缺口**
 
-- Android SDK/NDK 位于 `mobile-edge/tools/android-sdk/`。Windows 下 Android/Gradle 构建统一从 `C:\ZhixingZhixue` Junction 启动；该 ASCII 别名指向本项目根目录，用于避免 Kotlin/Gradle Worker 将中文路径错误解码。`local.properties` 已指向该别名下的 SDK。
-- `apps/mobile-android/` 的自写 `MediaProjection + MediaRecorder` 原型已移除，不再作为采集或发布路径。
-- 真实手机公开媒体的单帧/OCR、无同源音频或时间不连续证据只能保留为 `CANDIDATE_ONLY`，不得生成兴趣、知识、诊断或强制任务结论。
-- 当前实时入口只保留连续媒体入站、三路分析和封存窗口融合；v2 L0 迁移桥作为待接线的受控组件保留。旧 `candidate_card.v1` 通知/outbox 已从生产入口剥离，仅作为只读迁移兼容代码保留。
+- **学习启动断裂**: 短视频、电影解说、科普内容中的兴趣点很少被转化为明确学习任务
+- **过程证据断裂**: PC窗口、网页、笔记、视频、纸笔、脑电等数据各自孤立,缺少统一时间轴
+- **复盘解释断裂**: 只看到结果和建议,看不到"系统为什么给出这个建议"和具体证据
+
+**我们为学习者提供**:
+- 可回溯的学习过程时间线(何时启动、何时卡顿、何时恢复)
+- 有证据来源的复盘建议(不是"提高注意力",而是"在第2段卡顿,建议回看资料")
+- 隐私保护的采集机制(只记录窗口元数据,不截图、不记录键盘)
+
+**我们为教师提供**:
+- 可复查的过程性评价材料(学生在哪里需要引导、哪里真正理解了)
+- 证据卡批注和复核界面(减少主观猜测,用证据说话)
+
+### 从功能视角
+
+系统采用**采集层→数据处理层→功能层→交互层**四层架构:
+
+```
+📱 用户交互层
+   ├─ PC工作台(学生端) ✅已实现
+   ├─ 教师复核界面 ⏳待实现  
+   └─ 移动端界面 🚧部分实现(仅RTSP传输)
+
+⚙️ 功能层  
+   ├─ 兴趣-知识桥接 ⏳待实现
+   ├─ 学习机会窗识别 ⏳待实现(核心创新)
+   ├─ 证据卡生成 🚧部分实现
+   ├─ AI解释生成 ⏳待实现
+   └─ 教师复核工作流 ⏳待实现
+
+🔄 数据处理层
+   ├─ 统一事件结构 ✅已实现
+   ├─ 时间轴对齐 ✅已实现
+   ├─ 质量门控 ✅已实现
+   └─ 分级降级 ✅已实现
+
+📊 采集层
+   ├─ PC前台窗口 ✅已实现
+   ├─ 手机RTSP媒体 ✅已实现  
+   ├─ 摄像头/眼镜 ⏳待接入
+   └─ EEG/EDA状态 ⏳待接入(可选)
+```
+
+**当前状态**: 采集层完成,数据处理层完成,功能层待实现
+
+### 从技术视角
+
+**技术栈**
+- 前端: React 19.2.7 + Vite 8.2.0 + TypeScript 5.9.2
+- 后端: Python 3.12 + pytest 9.1 + ruff 0.9
+- 存储: 本地优先(DuckDB/Parquet/JSON)
+- 多端: Windows API + Android RTSP + (待接入)OpenCV/BrainFlow
+
+**五大技术创新点**
+1. **统一事件表征**: 学习前(兴趣)、学习中(行为)、学习后(复盘)统一为事件结构
+2. **兴趣-知识桥接**: 从真实生活入口进入可执行学习任务
+3. **多模态证据链**: 标准化事件字段,多端数据映射到同一时间轴
+4. **机会窗识别**: 综合多因素的时机判断 + 低置信降级机制(WindowScore公式待确定)
+5. **证据绑定式AI**: 每条解释必须引用时间窗口、证据来源、置信度
+
+## 🚀 快速开始
+
+### 前置要求
+- Node.js 22+ 和 pnpm 11.25+
+- Python 3.12+ 和 uv
+- (可选) Android SDK 用于手机端构建
+
+### 启动本地中枢
+```powershell
+cd services\local-hub
+uv run python -m zhixingzhixue_hub.pc.workbench_server
+```
+
+### 启动PC工作台前端
+```powershell
+cd apps\pc-workbench
+pnpm install
+pnpm dev
+```
+
+访问 `http://localhost:5173` 查看PC工作台界面。
+
+## 📁 项目结构
+
+```
+zhixing-zhixue/
+├── apps/
+│   └── pc-workbench/          # PC工作台前端(React)
+├── services/
+│   └── local-hub/             # 本地可信中枢(Python)
+│       ├── src/zhixingzhixue_hub/
+│       │   ├── pc/            # PC任务工作台
+│       │   ├── phone/         # 手机证据接入
+│       │   ├── analysis/      # 快慢路径分析
+│       │   ├── quality/       # 质量门控
+│       │   ├── evidence/      # 证据卡构建
+│       │   ├── learning/      # 学习工作门控
+│       │   └── timeline/      # 时间轴对齐
+│       └── tests/             # 70项测试
+├── mobile-edge/
+│   └── third_party/screenstream_source/  # Android RTSP内核
+├── docs/                      # 文档
+│   ├── 系统概览.md           # 三视角完整说明 ⭐
+│   ├── 环境配置与验收总览.md
+│   └── tdd/test-matrix.md
+└── specs/
+    └── 004-realtime-learning-core/  # 唯一冻结规格
+```
+
+## 核心应用边界
+
+- **PC工作台** (`apps/pc-workbench/`): PC学习实践、证据工作台、(待实现)教师复核界面
+- **本地中枢** (`services/local-hub/`): 会话管理、授权、同步、证据卡构建、分析调度、审计
+- **移动边缘端** (`mobile-edge/third_party/screenstream_source/`): RTSP媒体传输(用户授权后),学习候选管理
+- **冻结规格** (`specs/004-realtime-learning-core/`): 唯一实施依据,历史规格已废弃
+
+## 🎯 当前实现状态
+
+### ✅ 已完成(采集层+数据处理层)
+- PC前台窗口采集(窗口标题、进程路径、窗口类名)
+- 统一事件结构(标准化字段 + 时区感知 + 证据URI)
+- 时间轴对齐(同步标记 + 离线校准)
+- 质量门控(FUSION_ELIGIBLE/RECORD_ONLY/EXCLUDED)
+- 四级降级机制(模态降级+解释降级+交互降级)
+- Android设备连接(ADB探测 + 授权验证)
+- 手机RTSP媒体传输
+- 手机媒体准入门控(连续媒体+同源音频验证)
+- PC工作台前端(任务管理 + 实时仪表盘 + 时间线视图)
+- 70项单元和集成测试
+
+### 🚧 部分实现
+- 证据卡基础逻辑(待接入AI解释)
+- 快速候选生成(待完善慢路径语义分析)
+
+### ⏳ 待实现(功能层核心)
+
+**P0 优先级(必须实现)**
+1. **学习机会窗识别算法**(核心创新)
+   - WindowScore评分公式待确定
+   - 需结合认知负荷理论、心流理论、短视频推荐机制
+   - 窗口类型:启动/卡顿/策略切换/恢复/复盘
+
+2. **兴趣流采集**
+   - PC端:浏览器历史、搜索词、收藏
+   - 手机端:内容标签、停留、复看
+
+3. **兴趣-知识桥接**
+   - 兴趣标签→知识点映射
+   - 微学习任务生成
+
+**P1 优先级(重要增强)**
+4. AI解释生成(大模型接入 + 证据引用约束)
+5. 证据卡完整化(AI解释集成 + 报告模板)
+
+**P2 优先级(可选增强)**
+6. 视频/第一视角接入(OpenCV/MediaPipe)
+7. EEG/EDA状态流(BrainFlow/MNE)
+8. 教师复核界面
+
+## 🔒 隐私与安全
+
+**采集边界**
+- ✅ 采集: 前台窗口标题、进程路径、窗口类名
+- ❌ 不采集: 屏幕截图、键盘输入、剪贴板、浏览历史
+
+**数据存储**
+- 本地优先,使用`local://`URI
+- 匿名化脱敏
+- 可撤回机制
+- 隐私级别标记(local_only/masked)
+
+**证据分级**
+- 单帧/OCR/无音频 → CANDIDATE_ONLY(只记录,不生成学习结论)
+- 完整媒体 → 慢路径语义分析
+- 低质量模态 → 自动降级,不影响基础功能
+
+## 📚 文档
+
+- **[系统概览](docs/系统概览.md)** ⭐ 用户视角+功能视角+技术视角完整说明
+- [环境配置与验收](docs/环境配置与验收总览.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全说明](SECURITY.md)
+- [TDD测试矩阵](docs/tdd/test-matrix.md)
+- [审查入口](docs/审查入口.md)
+
+## 🧪 验证与测试
+
+```powershell
+# 代码质量检查
+python tools/verify_repository_hygiene.py
+python tools/verify_text_encoding.py
+
+# PC工作台测试
+cd apps\pc-workbench
+pnpm lint
+pnpm test
+
+# 本地中枢测试(70项)
+cd services\local-hub
+uv run pytest -v
+uv run ruff check src tests
+```
+
+## 🤝 贡献
+
+当前项目由个人开发,功能层核心算法(特别是学习机会窗识别)尚在研究阶段。
+
+欢迎在以下方面贡献:
+- 认知负荷理论/心流理论在学习时机判断中的应用
+- 短视频推荐算法的行为反馈机制借鉴
+- WindowScore评分公式设计建议
+- 证据卡模板和复盘报告设计
+
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)
+
+## 📄 许可
+
+(待添加)
+
+---
+
+**最后更新**: 2026-09-09  
+**当前阶段**: 采集层完成,功能层待实现  
+**核心任务**: 学习机会窗识别算法研究与实现
